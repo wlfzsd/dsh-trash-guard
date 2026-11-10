@@ -1,0 +1,4 @@
+node_modules/
+_trash/
+*.log
+.DS_Store

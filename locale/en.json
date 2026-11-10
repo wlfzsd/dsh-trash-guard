@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Trash Guard (delete interception)",
+    "description": "Reroutes every delete intent into the workspace trash (_trash/) instead of destroying bytes, so removals stay recoverable; commands and scripts that contain delete actions are denied before execution."
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "dsh-trash-guard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "删除拦截插件（dsh-trash-guard）：把「删除 / 删除文件 / 误删 / 清理」的意图改道到工作区垃圾箱 _trash/，可 restore 恢复；含删除动作的命令与脚本在执行前被拒绝。Reroute every delete intent into a workspace trash instead of destroying bytes.",
+  "keywords": [
+    "删除",
+    "删除文件",
+    "误删",
+    "误删恢复",
+    "撤销删除",
+    "垃圾箱",
+    "回收站",
+    "清理",
+    "拦截删除",
+    "trash",
+    "restore",
+    "trash-guard",
+    "delete-guard"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "locale/en.json",
+    "locale/zh.json"
+  ],
+  "license": "MIT"
+}
