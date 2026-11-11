@@ -16,20 +16,22 @@ const mod = await import(new URL('../index.js', import.meta.url).href)
 const { classifyText, classifyScript, classifyBatch, DEFAULT_DEBUG_DIR } = mod.__internals
 
 function parseArgs(argv) {
-	const out = { dir: DEFAULT_DEBUG_DIR, since: undefined, all: false, out: undefined, json: false }
+	const out = { dir: DEFAULT_DEBUG_DIR, since: undefined, all: false, out: undefined, json: false, trash: undefined }
 	for (let i = 0; i < argv.length; i += 1) {
 		const a = argv[i]
 		if (a === '--dir') out.dir = argv[++i]
 		else if (a === '--since') out.since = argv[++i]
 		else if (a === '--out') out.out = argv[++i]
+		else if (a === '--trash') out.trash = argv[++i]
 		else if (a === '--all') out.all = true
 		else if (a === '--json') out.json = true
 		else if (a === '--help' || a === '-h') {
-			console.log('node tools/analyze-blocks.mjs [--dir <dir>] [--since <ISO>] [--all] [--out <path>] [--json]')
+			console.log('node tools/analyze-blocks.mjs [--dir <dir>] [--since <ISO>] [--all] [--trash <workspace/_trash/manifest.jsonl>] [--out <path>] [--json]')
 			process.exit(0)
 		}
 	}
 	out.dir = resolve(out.dir)
+	if (out.trash !== undefined) out.trash = resolve(out.trash)
 	return out
 }
 
@@ -64,6 +66,36 @@ for (const file of files) {
 }
 
 const fresh = records.filter((r) => new Date(r.at) > since)
+
+/**
+ * 2026-11-11：漏报候选。
+ * 拦截日志只记"被拦住"的调用，**漏掉的根本不会产生 blocks 记录**；唯一可自动采集的漏报信号在
+ * `_trash/manifest.jsonl`：`note` 含"原文件已消失"的条目 = 文件不是走 trash 工具消失的
+ * （可能是①规则没覆盖的新写法 ②AI 换写法绕过成功 ③正常的移动/重命名 ④git 等工具改写内部文件）。
+ * `note` 含"已被替换"的是编辑产生的旧版本快照，不算漏报，单独计数。
+ */
+const misses = []
+const versionSnapshots = []
+if (args.trash !== undefined) {
+	if (existsSync(args.trash)) {
+		for (const line of readFileSync(args.trash, 'utf8').split(/\r?\n/)) {
+			if (line.trim() === '') continue
+			let rec
+			try {
+				rec = JSON.parse(line)
+			} catch {
+				continue
+			}
+			if (rec.op !== 'trash') continue
+			const note = String(rec.note ?? '')
+			if (note.includes('原文件已消失')) misses.push(rec)
+			else if (note.includes('已被替换')) versionSnapshots.push(rec)
+		}
+	} else {
+		console.error(`提醒：--trash 指定的台账不存在：${args.trash}`)
+	}
+}
+const freshMisses = misses.filter((m) => new Date(m.at) > since)
 const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1)
 const byRule = new Map()
 const byWhere = new Map()
@@ -222,6 +254,22 @@ else lines.push(repeats.slice(0, 20).map(([key, n]) => {
 	return `- ${n} 次：\`${ruleId}\` ／会话 \`${session}\` ／\`${String(text).slice(0, 160)}\``
 }).join('\n'))
 lines.push('')
+lines.push('## 漏报候选（影子层收尸：不是走 trash 消失的文件）')
+if (args.trash === undefined) {
+	lines.push('_未提供 `--trash` 台账，跳过漏报检测（建议加 `--trash <workspace>\\_trash\\manifest.jsonl`）。_')
+} else if (freshMisses.length === 0) {
+	lines.push(`_窗口内 0 条（台账全量 ${misses.length} 条；版本快照 ${versionSnapshots.length} 条已排除）。_`)
+} else {
+	lines.push(`窗口内 **${freshMisses.length}** 条（台账全量 ${misses.length} 条；版本快照 ${versionSnapshots.length} 条不计）。`)
+	lines.push('')
+	lines.push('> 这些文件不是经 `trash` 工具消失的：可能是 ①规则没覆盖的新写法（真漏）②AI 换写法绕过成功 ③正常的移动/重命名 ④git 等工具改写的内部文件。逐条判，别一律当漏报。')
+	lines.push('')
+	lines.push('| 时间 | 原路径 | id |')
+	lines.push('|---|---|---|')
+	for (const m of freshMisses.slice(0, 50)) lines.push(`| ${m.at} | \`${m.from}\` | ${m.id} |`)
+	if (freshMisses.length > 50) lines.push(`| … | 另有 ${freshMisses.length - 50} 条见台账 | |`)
+}
+lines.push('')
 lines.push('## 解析失败的日志行')
 if (parseErrors.length === 0) lines.push('_无。_')
 else lines.push(parseErrors.map((e) => `- ${e.file}:${e.line} — ${e.error}`).join('\n'))
@@ -238,10 +286,11 @@ const summary = {
 	candidates: candidates.length,
 	needsHuman: needsHuman.length,
 	repeats: repeats.length,
+	misses: freshMisses.length,
 	report: reportPath,
 }
 if (args.json) console.log(JSON.stringify(summary, null, 2))
 else {
-	console.log(`分析完成：新增 ${fresh.length} 条（总 ${records.length}），疑似误判 ${candidates.length} 条，待人工 ${needsHuman.length} 条，重复尝试组 ${repeats.length}`)
+	console.log(`分析完成：新增 ${fresh.length} 条（总 ${records.length}），疑似误判 ${candidates.length} 条，待人工 ${needsHuman.length} 条，漏报候选 ${freshMisses.length} 条，重复尝试组 ${repeats.length}`)
 	console.log(`报告：${reportPath}`)
 }
