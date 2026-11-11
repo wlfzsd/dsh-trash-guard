@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN = resolve(HERE, '..')
 const mod = await import(new URL('../index.js', import.meta.url).href)
-const { RULES, classifyText, DEFAULT_DEBUG_DIR } = mod.__internals
+const { classifyText, classifyScript, classifyBatch, DEFAULT_DEBUG_DIR } = mod.__internals
 
 function parseArgs(argv) {
 	const out = { dir: DEFAULT_DEBUG_DIR, since: undefined, all: false, out: undefined, json: false }
@@ -80,29 +80,65 @@ for (const r of fresh) {
 	bump(byWorkspace, r.workspace || '(unknown)')
 }
 
-/** 去掉引号字符串与 # 注释后重新分类：还命中就不是"只在字符串/注释里提到"。 */
-function mentionOnly(text) {
-	const stripped = String(text ?? '')
-		.replace(/`[^`]*`/g, '``')
+/**
+ * 按记录来源挑插件当时用的分类器：`.bat/.cmd` 用批处理规则、其它脚本用脚本规则、命令用命令规则。
+ * （2026-11-11 修：首版一律用 classifyText，把 `if exist x del x`、`for /d %%i ... rd /s`、
+ *  `Remove-`` 反引号续行这类**真危险**的批处理/折行写法全判成了"误判"。）
+ */
+function classifierFor(record) {
+	const path = String(record.path ?? '')
+	if (/\.(bat|cmd)$/i.test(path)) return (text) => classifyBatch(text)
+	if (record.where === 'script' || record.where === 'launched') return (text) => classifyScript(text, path || 'x.ps1')
+	return (text) => classifyText(text, [])
+}
+
+/** 去掉引号与 # 注释后的文本（用于判断"是否只是提到删除词"）。 */
+function stripMentions(text) {
+	return String(text ?? '')
+		.replace(/`[^`\n]*`/g, '``')
 		.replace(/"[^"\n]*"/g, '""')
 		.replace(/'[^'\n]*'/g, "''")
 		.replace(/#.*$/gm, '')
 		.replace(/<#[^#]*#>/g, '')
-	return classifyText(stripped, []) === undefined
 }
 
+/** 引号里的内容可能正是实际执行体（cmd /c、bash -c、解释器 -c），这类不能判成误判。 */
+const INLINE_EXEC = /\b(?:cmd(?:\.exe)?\s*\/[ck]\b|(?:bash|sh|zsh)\s+-c\b|pwsh(?:\.exe)?\b|powershell(?:\.exe)?\b|python[0-9.]*\s+-[ce]\b|node\s+-e\b|perl\s+-e\b|ruby\s+-e\b)/i
+
 const candidates = []
+const needsHuman = []
 const repeatMap = new Map()
 for (const r of fresh) {
-	const text = String(r.text ?? '')
-	const norm = text.replace(/\s+/g, ' ').trim()
-	bump(repeatMap, `${r.rule?.id}\u0000${norm.slice(0, 300)}`)
+	const full = String(r.text ?? '')
+	const snippet = String(r.snippet ?? '')
+	// 复核正文：默认用记录里的 text；只有"旧格式只剩片段"或"正文被截断"时才退回 snippet，
+	// 并把这些情况记为**模糊点**（需要人工），不要把它们算成"误判"。
+	let text = full
+	const info = []
+	const ambiguous = []
+	if (r.where === 'launched' && (full === '' || full === snippet)) {
+		text = snippet
+		ambiguous.push('日志里只有命中片段（旧格式），无法复核全文')
+	}
+	if (r.truncated && snippet !== '') {
+		text = snippet
+		ambiguous.push('日志正文按 maxTextBytes 截断，复核改用 snippet')
+	}
+	const norm = full.replace(/\s+/g, ' ').trim()
+	bump(repeatMap, `${r.rule?.id}\u0000${r.session || '(no-session)'}\u0000${norm.slice(0, 300)}`)
+	const classify = classifierFor(r)
 	const reasons = []
-	if (mentionOnly(text)) reasons.push('去掉引号/注释后不再命中任何规则（疑似"仅在字符串或注释里提到删除词"）')
+	const partialEvidence = ambiguous.length > 0
+	if (classify(stripMentions(text)) === undefined) {
+		if (INLINE_EXEC.test(text)) ambiguous.push('去掉引号后不命中，但含 cmd /c、-c、pwsh 等"引号内即执行体"形态 → 不能判误判')
+		else if (partialEvidence) ambiguous.push('证据不完整（只有片段或被截断），无法判断"是否只是提到删除词"')
+		else reasons.push('去掉引号/注释后不再命中任何规则（疑似"仅在字符串或注释里提到删除词"）')
+	}
 	if (/\B--help\b|\s-h\b|--dry-?run\b|-WhatIf\b|--version\b/i.test(text)) reasons.push('命令带 --help/--dry-run/-WhatIf/--version 一类只读开关')
-	if (r.where === 'launched' && r.path && !existsSync(r.path)) reasons.push('被拦的启动脚本路径已不存在（可能早已改名/移动）')
+	if (r.where === 'launched' && r.path && !existsSync(r.path)) ambiguous.push('被拦脚本现在已不存在（不影响当时判定，仅供参考）')
 	if (r.where === 'script' && r.path && !/\.(ps1|psm1|psd1|bat|cmd|sh|bash|zsh|py|js|mjs|cjs|ts|vbs|reg)$/i.test(r.path)) reasons.push('被拦的写入路径不是脚本后缀（写入侧误判）')
-	if (reasons.length > 0) candidates.push({ r, reasons })
+	if (reasons.length > 0) candidates.push({ r, reasons, notes: [...info, ...ambiguous] })
+	else if (ambiguous.length > 0) needsHuman.push({ r, notes: [...info, ...ambiguous] })
 }
 
 const repeats = [...repeatMap.entries()].filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1])
@@ -154,9 +190,37 @@ if (candidates.length === 0) {
 	})
 	if (candidates.length > 40) lines.push(`> 另有 ${candidates.length - 40} 条未展开（见 jsonl 原文）。`)
 }
-lines.push('## 重复尝试（同规则 + 同正文 ≥3 次，提示模型可能陷入重试）')
+lines.push('## 需人工确认（启发式拿不准，不能当误判也不能当无事）')
+if (needsHuman.length === 0) {
+	lines.push('_无。_')
+} else {
+	lines.push(`共 ${needsHuman.length} 条。按原因聚合（每组最多展开 2 条样本，其余见 jsonl 原文）：`)
+	lines.push('')
+	const byNote = new Map()
+	for (const item of needsHuman) {
+		const key = item.notes.join('；') || '(未标注)'
+		if (!byNote.has(key)) byNote.set(key, [])
+		byNote.get(key).push(item)
+	}
+	for (const [reason, group] of [...byNote.entries()].sort((a, b) => b[1].length - a[1].length)) {
+		lines.push(`### ${group.length} 条｜${reason}`)
+		group.slice(0, 2).forEach(({ r }) => {
+			const text = String(r.text ?? '')
+			const shown = text.length > 1200 ? `${text.slice(0, 1200)}\n…（已截断至 1200 字符，全文见 ${r.__file}:${r.__line}，原长 ${text.length}）` : text
+			lines.push(`- \`${r.rule?.id}\` @ ${r.at} ｜${r.where}｜${r.path ?? '-'}`)
+			lines.push('```text')
+			lines.push(shown)
+			lines.push('```')
+		})
+		lines.push('')
+	}
+}
+lines.push('## 重复尝试（同规则 + 同正文 + 同会话 ≥3 次；跨会话合并会掩盖真正的重试）')
 if (repeats.length === 0) lines.push('_无。_')
-else lines.push(repeats.slice(0, 20).map(([key, n]) => `- ${n} 次：\`${key.split('\u0000')[0]}\` / \`${key.split('\u0000')[1].slice(0, 160)}\``).join('\n'))
+else lines.push(repeats.slice(0, 20).map(([key, n]) => {
+	const [ruleId, session, text] = key.split('\u0000')
+	return `- ${n} 次：\`${ruleId}\` ／会话 \`${session}\` ／\`${String(text).slice(0, 160)}\``
+}).join('\n'))
 lines.push('')
 lines.push('## 解析失败的日志行')
 if (parseErrors.length === 0) lines.push('_无。_')
@@ -164,7 +228,7 @@ else lines.push(parseErrors.map((e) => `- ${e.file}:${e.line} — ${e.error}`).j
 
 mkdirSync(dirname(reportPath), { recursive: true })
 writeFileSync(reportPath, `${lines.join('\n')}\n`, 'utf8')
-writeFileSync(statePath, `${JSON.stringify({ lastAnalyzedAt: now.toISOString(), lastReport: reportPath, lastCounts: { fresh: fresh.length, total: records.length, candidates: candidates.length, repeats: repeats.length } }, null, 2)}\n`, 'utf8')
+writeFileSync(statePath, `${JSON.stringify({ lastAnalyzedAt: now.toISOString(), lastReport: reportPath, lastCounts: { fresh: fresh.length, total: records.length, candidates: candidates.length, needsHuman: needsHuman.length, repeats: repeats.length } }, null, 2)}\n`, 'utf8')
 
 const summary = {
 	dir: args.dir,
@@ -172,11 +236,12 @@ const summary = {
 	newRecords: fresh.length,
 	totalRecords: records.length,
 	candidates: candidates.length,
+	needsHuman: needsHuman.length,
 	repeats: repeats.length,
 	report: reportPath,
 }
 if (args.json) console.log(JSON.stringify(summary, null, 2))
 else {
-	console.log(`分析完成：新增 ${fresh.length} 条（总 ${records.length}），疑似误判 ${candidates.length} 条，重复尝试组 ${repeats.length}`)
+	console.log(`分析完成：新增 ${fresh.length} 条（总 ${records.length}），疑似误判 ${candidates.length} 条，待人工 ${needsHuman.length} 条，重复尝试组 ${repeats.length}`)
 	console.log(`报告：${reportPath}`)
 }

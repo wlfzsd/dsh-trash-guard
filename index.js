@@ -303,13 +303,24 @@ async function writeBlockRecord(config, exec, hit, root, warn) {
 	if (!debug.enabled) return
 	try {
 		const args = exec?.arguments ?? {}
-		const raw = hit.where === 'command'
-			? String(args.command ?? '')
-			: hit.where === 'script'
-				? String(args.content ?? '')
-				: hit.where === 'patch'
-					? String(args.input ?? args.patch ?? '')
-					: String(hit.snippet ?? '')
+		// 2026-11-11：launched（启动前读到的脚本）优先留正文，留不到才退回命中片段——
+		// 只存 clip 过的片段会让复盘侧无法复核（折行/反引号被压平后就"看起来不命中"了）。
+		let raw
+		if (hit.where === 'command') raw = String(args.command ?? '')
+		else if (hit.where === 'script') raw = String(args.content ?? '')
+		else if (hit.where === 'patch') raw = String(args.input ?? args.patch ?? '')
+		else raw = ''
+		if (hit.where === 'launched' && hit.path) {
+			try {
+				// 用与扫描同一套 BOM/UTF-16 解码，避免把 UTF-16LE 脚本记成乱码（复核时会"看起来不命中"）
+				const body = await readScriptText(hit.path, config.maxScriptBytes ?? DEFAULT_CONFIG.maxScriptBytes)
+				raw = body === undefined ? '' : body
+			} catch {
+				raw = ''
+			}
+			if (raw === '') raw = String(hit.snippet ?? '')
+		}
+		if (raw === '') raw = String(hit.snippet ?? '')
 		const capped = raw.length > debug.maxTextBytes ? raw.slice(0, debug.maxTextBytes) : raw
 		const record = {
 			at: new Date().toISOString(),
