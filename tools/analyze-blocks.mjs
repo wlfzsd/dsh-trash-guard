@@ -6,7 +6,7 @@
 //   node tools/analyze-blocks.mjs --since 2026-11-01T00:00:00Z
 //   node tools/analyze-blocks.mjs --dir E:\dsh-trash-guard-logs --out <报告路径>
 // 退出码：0 正常（含"没有新记录"）；2 目录不存在且没有任何日志；1 参数/读取错误。
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -74,6 +74,48 @@ const fresh = records.filter((r) => new Date(r.at) > since)
  * （可能是①规则没覆盖的新写法 ②AI 换写法绕过成功 ③正常的移动/重命名 ④git 等工具改写内部文件）。
  * `note` 含"已被替换"的是编辑产生的旧版本快照，不算漏报，单独计数。
  */
+/**
+ * 2026-11-11：运行态自检。
+ * 插件改完代码不重启，磁盘是新的、进程里还是旧的，日志可能一行都不写——此时"0 条"绝不能读成
+ * "零拦截"（规则27：本轮 0 条要附真实原因）。判据只有心跳能提供：
+ * 心跳里记的是**被加载的那个模块文件**的 mtime，与磁盘当前 mtime 比对即可判定新旧。
+ */
+const pluginPath = fileURLToPath(new URL('../index.js', import.meta.url))
+const heartbeatPath = join(args.dir, '_heartbeat.json')
+let diskMtimeMs
+try {
+	diskMtimeMs = statSync(pluginPath).mtimeMs
+} catch {
+	diskMtimeMs = undefined
+}
+let heartbeat
+if (existsSync(heartbeatPath)) {
+	try {
+		heartbeat = JSON.parse(readFileSync(heartbeatPath, 'utf8'))
+	} catch {
+		heartbeat = undefined
+	}
+}
+let runtimeStatus
+let runtimeReason
+if (heartbeat === undefined) {
+	runtimeStatus = 'unknown'
+	runtimeReason = '没有心跳文件：当前进程里的插件可能是旧版本（未含心跳）、或从未成功挂载。此状态下"0 条日志"不能当作"零拦截"。'
+} else if (diskMtimeMs !== undefined && Math.abs(Number(heartbeat.moduleMtimeMs) - diskMtimeMs) > 1) {
+	runtimeStatus = 'stale'
+	runtimeReason = `运行中的插件不是磁盘上的最新版（心跳记录模块 mtime=${heartbeat.moduleMtimeMs}，磁盘=${diskMtimeMs}）。改动要重启 dsh 才生效；此状态下"0 条日志"不能当作"零拦截"。`
+} else {
+	runtimeStatus = 'fresh'
+	runtimeReason = '运行中的插件与磁盘上的 index.js 一致（心跳 moduleMtimeMs 与磁盘 mtime 相符）。'
+}
+
+/** 0 条到底意味着什么：只有运行态确认一致，"0 条"才是可信的"本轮无拦截"。 */
+const zeroMeaning = fresh.length === 0
+	? (runtimeStatus === 'fresh'
+		? '本轮无新增拦截（运行态已确认最新，结论可信）'
+		: `本轮 0 条日志，但运行态未确认（${runtimeStatus}）——**不能判定为零拦截**，属"日志未生效/未确认"，不是"没发生"`)
+	: undefined
+
 const misses = []
 const versionSnapshots = []
 if (args.trash !== undefined) {
@@ -191,6 +233,17 @@ lines.push('')
 lines.push(`- 日志目录：\`${args.dir}\``)
 lines.push(`- 分析窗口：\`${since.toISOString()}\` 之后（${args.all ? '全量' : '增量'}）`)
 lines.push(`- 日志文件 ${files.length} 个；记录 ${records.length} 条；本次新记录 **${fresh.length}** 条；解析失败 ${parseErrors.length} 条`)
+if (zeroMeaning !== undefined) lines.push(`- **本次 0 条的含义**：${zeroMeaning}`)
+lines.push('')
+lines.push('## 运行态自检（判断"0 条"可信不可信）')
+lines.push(`- 结论：**${runtimeStatus}**`)
+lines.push(`- 说明：${runtimeReason}`)
+lines.push(`- 磁盘 index.js mtime：\`${diskMtimeMs ?? '读取失败'}\``)
+if (heartbeat === undefined) lines.push('- 心跳：**缺失**（`_heartbeat.json` 不存在）')
+else {
+	lines.push(`- 心跳时间：\`${heartbeat.at}\`（pid ${heartbeat.pid}，node ${heartbeat.node}）`)
+	lines.push(`- 心跳记录的被加载模块：\`${heartbeat.modulePath}\`（mtime \`${heartbeat.moduleMtimeMs}\`，${heartbeat.moduleBytes} B）`)
+}
 lines.push('')
 lines.push('## 新拦截按规则')
 lines.push(fmtTable(byRule, '规则 id'))
@@ -283,6 +336,8 @@ const summary = {
 	since: since.toISOString(),
 	newRecords: fresh.length,
 	totalRecords: records.length,
+	runtime: { status: runtimeStatus, moduleMtimeMs: heartbeat?.moduleMtimeMs, diskMtimeMs, heartbeatAt: heartbeat?.at },
+	zeroMeaning,
 	candidates: candidates.length,
 	needsHuman: needsHuman.length,
 	repeats: repeats.length,
@@ -291,6 +346,8 @@ const summary = {
 }
 if (args.json) console.log(JSON.stringify(summary, null, 2))
 else {
+	console.log(`运行态：${runtimeStatus}${runtimeStatus === 'fresh' ? '' : '（0 条日志不能当作零拦截）'}`)
+	if (zeroMeaning !== undefined) console.log(`本次 0 条的含义：${zeroMeaning}`)
 	console.log(`分析完成：新增 ${fresh.length} 条（总 ${records.length}），疑似误判 ${candidates.length} 条，待人工 ${needsHuman.length} 条，漏报候选 ${freshMisses.length} 条，重复尝试组 ${repeats.length}`)
 	console.log(`报告：${reportPath}`)
 }

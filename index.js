@@ -19,9 +19,10 @@
  * 因为 profile 目录里没有 node_modules，任何裸包导入都会解析失败。
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { appendFile, link, mkdir, open, readdir, readFile, rename, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-trash-guard'
 /** 只需要工具注册表；fs 服务可有可无（有就用来解析进程可见路径）。 */
@@ -276,6 +277,38 @@ function debugSettings(config) {
 function localDateStamp(date = new Date()) {
 	const pad = (value) => String(value).padStart(2, '0')
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/**
+ * 2026-11-11：启动心跳。记录**真正被加载的那个模块文件**的 mtime，供夜间分析判断
+ * "运行态是不是最新版"——不改代码、不重启就永远无法从外部确认这件事，所以让插件自己说。
+ * 写失败只告警，不影响挂载。
+ */
+function writeHeartbeat(config, warn) {
+	const debug = debugSettings(config)
+	if (!debug.enabled) return
+	try {
+		const modulePath = fileURLToPath(import.meta.url)
+		const info = statSync(modulePath)
+		mkdirSync(debug.dir, { recursive: true })
+		writeFileSync(
+			join(debug.dir, '_heartbeat.json'),
+			`${JSON.stringify({
+				at: new Date().toISOString(),
+				pid: process.pid,
+				node: process.version,
+				modulePath,
+				moduleMtimeMs: info.mtimeMs,
+				moduleBytes: info.size,
+				trashDir: config.trashDir,
+				debugDir: debug.dir,
+				shadow: config.shadow?.enabled === true,
+			}, null, 2)}\n`,
+			'utf8',
+		)
+	} catch (error) {
+		warn?.(`dsh-trash-guard: 心跳写入失败（不影响拦截）：${error instanceof Error ? error.message : String(error)}`)
+	}
 }
 
 /** 轻量脱敏：只挡最常见的"键=值"与 Bearer 凭据形态，不改变命令结构，便于复盘时仍能读懂。 */
@@ -1028,6 +1061,8 @@ export function apply(ctx, userConfig) {
 	// 2) 唯一的"删除"实现：移动进垃圾箱。
 	ctx.tools.register(trashTool(ctx, current))
 	ctx.tools.register(restoreTool(ctx, current))
+	// 2026-11-11：启动即心跳，让夜间分析能判断"运行态是否最新版"（否则只能靠重启才验证得到）。
+	writeHeartbeat(config, warn)
 	ctx.logger?.info?.('dsh-trash-guard: delete intents rerouted to workspace trash')
 }
 
@@ -1036,6 +1071,6 @@ export const __internals = {
 	classifyText, classifyScript, classifyBatch, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
 	inspect, isInside, isScriptPath, clip, matchedLine, RULES, BAT_RULE,
 	riskFactors, denialText,
-	debugSettings, redactSecrets, localDateStamp, sessionKeyOf, writeBlockRecord, DEFAULT_DEBUG_DIR,
+	debugSettings, redactSecrets, localDateStamp, sessionKeyOf, writeBlockRecord, writeHeartbeat, DEFAULT_DEBUG_DIR,
 	shadowSync, shadowSweep, isSkipped, walkFiles, DEFAULT_CONFIG,
 }
