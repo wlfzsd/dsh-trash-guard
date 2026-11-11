@@ -32,7 +32,7 @@ plugin.apply({
 	get: () => undefined,
 	on: (event, handler) => { if (!handlers.has(event)) handlers.set(event, []); handlers.get(event).push(handler) },
 	tools: { register: (definition) => { registered.push(definition); return () => {} } },
-}, { workspace: ROOT, trashDir: '_trash' })
+}, { workspace: ROOT, trashDir: '_trash', debug: { dir: ROOT + '/_debug' } })
 const guard = handlers.get('tools/pre-execute')[0]
 const trashTool = registered.find((tool) => tool.name === 'trash')
 const restoreTool = registered.find((tool) => tool.name === 'restore')

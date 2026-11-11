@@ -12,7 +12,7 @@ const handlers = new Map()
 const plugin = await import(PLUGIN)
 plugin.apply({ logger: { info() {}, warn() {} }, get: () => undefined,
   on: (e, h) => { if (!handlers.has(e)) handlers.set(e, []); handlers.get(e).push(h) },
-  tools: { register: () => () => {} } }, { workspace: ROOT, trashDir: '_trash' })
+  tools: { register: () => () => {} } }, { workspace: ROOT, trashDir: '_trash', debug: { dir: ROOT + '/_debug' } })
 const guard = handlers.get('tools/pre-execute')[0]
 const decide = (command) => guard({ name: 'pwsh', arguments: { command } }, async () => ({ kind: 'allow' }))
 

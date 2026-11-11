@@ -1,4 +1,4 @@
-﻿// theme=trash-guard status=active date=2026-11-10
+// theme=trash-guard status=active date=2026-11-10
 /**
  * e2e 判定矩阵：用**真实文件**当夹具，逐条跑插件的 tools/pre-execute 钩子。
  *
@@ -37,7 +37,7 @@ plugin.apply({
 		handlers.get(event).push(handler)
 	},
 	tools: { register: (definition) => { registered.push(definition); return () => {} } },
-}, { workspace: ROOT, trashDir: '_trash' })
+}, { workspace: ROOT, trashDir: '_trash', debug: { dir: ROOT + '/_debug' } })
 
 const guard = handlers.get('tools/pre-execute')[0]
 const trashTool = registered.find((tool) => tool.name === 'trash')

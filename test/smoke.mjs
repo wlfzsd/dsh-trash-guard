@@ -1,4 +1,4 @@
-﻿// theme=trash-guard status=active date=2026-11-10
+// theme=trash-guard status=active date=2026-11-10
 /**
  * 冒烟验证（不加载进 dsh、不碰用户 profile）：
  *  1. 插件能被 import + apply(mockCtx) 正常挂载；
@@ -44,7 +44,7 @@ const ctx = {
 	tools: { register(definition) { registered.push(definition); return () => {} } },
 }
 await mkdir(ROOT, { recursive: true })
-plugin.apply(ctx, { workspace: ROOT, trashDir: '_trash' })
+plugin.apply(ctx, { workspace: ROOT, trashDir: '_trash', debug: { dir: ROOT + '/_debug' } })
 
 check('注册 2 个工具', registered.map((tool) => tool.name), ['trash', 'restore'])
 check('挂载 tools/pre-execute', handlers.has('tools/pre-execute'), true)

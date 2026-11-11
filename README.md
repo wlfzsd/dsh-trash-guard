@@ -221,6 +221,41 @@ dsh-trash-guard/
 
 ---
 
-## 八、许可
+## 八、调试模式与夜间分析（v0.1.1 起，默认开启）
+
+每次拦截都会把现场写成一行 JSONL，用来事后复盘"到底拦对没有"。**默认开启，目录不存在会自动创建。**
+
+| 文件 | 内容 |
+|---|---|
+| `<debug.dir>/blocks-<YYYY-MM-DD>.jsonl` | 每行一条拦截记录（本地日期切分，append-only） |
+| `<debug.dir>/_state.json` | 分析器游标：`lastAnalyzedAt` / `lastReport` / `lastCounts` |
+| `<debug.dir>/reports/analyze-<时间戳>.md` | 统计 + 疑似误判候选 + 重复尝试 |
+
+单条字段：`at`、`session`、`tool`、`where`（command/script/launched/patch）、`path`、`rule{id,label}`、`risks[]`、`workspace`、`snippet`、`text`（原文）、`textBytes`、`truncated`。
+
+```yaml
+        debug:
+          enabled: true                    # 默认开
+          dir: 'E:\dsh-trash-guard-logs'   # 换成你自己的目录
+          maxTextBytes: 16384              # 超长正文截断并置 truncated=true
+          redact: true                     # 遮蔽 Authorization/Bearer/password/token/secret/api_key
+```
+
+**分析器**（零依赖，手动可跑；夜间任务也调它）：
+
+```powershell
+node tools/analyze-blocks.mjs            # 增量：只分析上次之后的新记录
+node tools/analyze-blocks.mjs --all      # 全量
+node tools/analyze-blocks.mjs --dir D:\my-logs --since 2026-11-01T00:00:00Z --json
+# 退出码：0 正常（含"无新记录"）；2 目录不存在；1 参数/读取错误
+```
+
+它做三件事：①按规则/入口/工具/日期/会话统计；②启发式挑**疑似误判**——去掉引号与注释后不再命中任何规则（只是"提到"删除词）、命令带 `--help/--dry-run/-WhatIf/--version`、被拦脚本路径已不存在、写入路径不是脚本后缀；③找"同规则 + 同正文 ≥3 次"的重复尝试（模型原地重试的信号）。
+
+**夜间例行**：本机用 DSH 的定时任务在每天 `00:00` 跑分析器、逐条裁决误判候选，结论写到 `reports/优化建议-<日期>.md`，**只出建议不改代码**（改代码要人批准并重启 dsh 才生效）。别的环境用 cron / 计划任务调上面这条命令即可。
+
+**边界**：①只记 deny，不放行时不记；②日志含命令原文，默认脱敏但仍可能残留敏感信息，**不要外发**；③写日志失败只 `warn`，绝不影响拦截判定；④多个工作区共用一个日志目录；⑤测试套件会把日志写到自己的工作区（`_debug`），不污染该目录。
+
+## 九、许可
 
 MIT

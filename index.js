@@ -60,7 +60,20 @@ const DEFAULT_CONFIG = {
 		/** 这些顶层目录不建影子。 */
 		skipDirs: ['.git', 'node_modules', '__pycache__', '.venv'],
 	},
+	/**
+	 * 2026-11-11 调试模式（**默认开启**）：每次拦截都把现场写成一行 JSONL 到 debug.dir，
+	 * 供夜间分析误判与规则优化。写盘失败只告警，绝不影响拦截本身。
+	 */
+	debug: {
+		enabled: true,
+		dir: 'E:\\dsh-trash-guard-logs',
+		maxTextBytes: 16 * 1024,
+		redact: true,
+	},
 }
+
+/** 调试日志默认目录（E 盘；目录不存在时首次写日志自动创建）。 */
+const DEFAULT_DEBUG_DIR = 'E:\\dsh-trash-guard-logs'
 
 /** 语句起始锚点：行首、或 `; | & ( {` 之后，避免把字符串/参数里的 del、rm 当成命令。 */
 const STATEMENT = String.raw`(?:^|[\n;|&({])\s*`
@@ -248,6 +261,75 @@ function isInside(parent, child) {
 /** 2026-11-10T10-44-02-123Z，用作垃圾箱子目录名与 id 前缀。 */
 function stampOf(date = new Date()) {
 	return date.toISOString().replace(/[:.]/g, '-')
+}
+
+/** 归一化调试配置：默认开启；路径/上限/脱敏都有安全回退。 */
+function debugSettings(config) {
+	const debug = config?.debug ?? {}
+	const enabled = debug.enabled !== false
+	const rawDir = typeof debug.dir === 'string' && debug.dir.trim() !== '' ? debug.dir.trim() : DEFAULT_DEBUG_DIR
+	const maxTextBytes = Number.isFinite(debug.maxTextBytes) && debug.maxTextBytes > 0 ? Math.trunc(debug.maxTextBytes) : 16 * 1024
+	return { enabled, dir: resolve(rawDir), maxTextBytes, redact: debug.redact !== false }
+}
+
+/** 本地日期 YYYY-MM-DD（日志按人看的本地时区切分，不用 UTC）。 */
+function localDateStamp(date = new Date()) {
+	const pad = (value) => String(value).padStart(2, '0')
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/** 轻量脱敏：只挡最常见的"键=值"与 Bearer 凭据形态，不改变命令结构，便于复盘时仍能读懂。 */
+function redactSecrets(text) {
+	return String(text)
+		.replace(/\b(authorization)\s*[:=]\s*(bearer\s+)?[^\s"']+/gi, (whole, key, bearer) => `${key}: ${bearer ? 'Bearer ' : ''}***`)
+		.replace(/\b(Bearer)\s+[A-Za-z0-9\-_.=]+/gi, '$1 ***')
+		.replace(/\b(passw(?:or)?d|pwd|token|secret|api[_-]?key|apikey)(\s*[:=]\s*)([^\s"']+)/gi, (whole, key, sep) => `${key}${sep}***`)
+}
+
+/** 会话标识：只取确实存在的 id，取不到就留空（不猜）。 */
+function sessionKeyOf(exec) {
+	const session = exec?.agent?.session
+	if (typeof session === 'string') return session
+	if (session !== undefined && session !== null) {
+		const id = session.id ?? session.sessionId
+		if (typeof id === 'string' && id !== '') return id
+	}
+	return ''
+}
+
+/** 把一次拦截写成一行 JSONL；任何失败只告警，绝不影响拦截返回值。 */
+async function writeBlockRecord(config, exec, hit, root, warn) {
+	const debug = debugSettings(config)
+	if (!debug.enabled) return
+	try {
+		const args = exec?.arguments ?? {}
+		const raw = hit.where === 'command'
+			? String(args.command ?? '')
+			: hit.where === 'script'
+				? String(args.content ?? '')
+				: hit.where === 'patch'
+					? String(args.input ?? args.patch ?? '')
+					: String(hit.snippet ?? '')
+		const capped = raw.length > debug.maxTextBytes ? raw.slice(0, debug.maxTextBytes) : raw
+		const record = {
+			at: new Date().toISOString(),
+			session: sessionKeyOf(exec),
+			tool: String(exec?.name ?? ''),
+			where: hit.where,
+			path: hit.path ?? null,
+			rule: { id: hit.rule?.id ?? '', label: hit.rule?.label ?? '' },
+			risks: Array.isArray(hit.risks) ? hit.risks : [],
+			workspace: root,
+			snippet: hit.snippet ?? '',
+			text: debug.redact ? redactSecrets(capped) : capped,
+			textBytes: raw.length,
+			truncated: raw.length > capped.length,
+		}
+		await mkdir(debug.dir, { recursive: true })
+		await appendFile(join(debug.dir, `blocks-${localDateStamp()}.jsonl`), `${JSON.stringify(record)}\n`, 'utf8')
+	} catch (error) {
+		warn?.(`dsh-trash-guard: 调试日志写入失败（不影响拦截）：${error instanceof Error ? error.message : String(error)}`)
+	}
 }
 
 function isScriptPath(path) {
@@ -917,6 +999,8 @@ export function apply(ctx, userConfig) {
 			if (toolName !== TRASH_TOOL && toolName !== RESTORE_TOOL) {
 				const hit = await inspect(toolName, exec?.arguments, config, workspaceOf(ctx, config, exec))
 				if (hit !== undefined) {
+					// 2026-11-11：先落调试日志（默认开），再返回 deny；写日志失败不影响拒绝。
+					await writeBlockRecord(config, exec, hit, workspaceOf(ctx, config, exec), warn)
 					return {
 						kind: 'deny',
 						reason: denialText(hit, trashRootOf(exec)),
@@ -941,5 +1025,6 @@ export const __internals = {
 	classifyText, classifyScript, classifyBatch, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
 	inspect, isInside, isScriptPath, clip, matchedLine, RULES, BAT_RULE,
 	riskFactors, denialText,
+	debugSettings, redactSecrets, localDateStamp, sessionKeyOf, writeBlockRecord, DEFAULT_DEBUG_DIR,
 	shadowSync, shadowSweep, isSkipped, walkFiles, DEFAULT_CONFIG,
 }
