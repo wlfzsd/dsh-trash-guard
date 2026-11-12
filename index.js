@@ -93,7 +93,7 @@ const RULES = [
 	{
 		id: 'remove-item',
 		label: 'Remove-Item / rm / del / rd / rmdir / unlink',
-		re: new RegExp(STATEMENT + String.raw`(?:remove-item|clear-item|ri|rm|del|erase|rd|rmdir|unlink)\b`, 'i'),
+		re: new RegExp(STATEMENT + String.raw`(?:remove-item|clear-item|ri|rm|del|erase|rd|rmdir|unlink)(?=\s|/|$|["'])`, 'i'),
 	},
 	{
 		id: 'clear-content',
@@ -404,9 +404,20 @@ function stripCommentLines(text) {
 	return String(text)
 }
 
+/**
+ * 2026-11-13 误伤修复：Python 的 `del` 只解绑名字/切片/字典键，**删不了文件**。
+ * 实测 app.py 因 `del self._hb_lines[:-40]` 被拒启动；这里把 .py 正文里的语句级
+ * `del ` 掩成 `X `。文件删除仍由 runtime-api-delete（os.remove / shutil.rmtree /
+ * os.unlink 等）负责，覆盖面不变——app.py/search_api.py 改后仍会因 os.remove 被拦。
+ */
+function maskPythonDel(content, scriptPath) {
+	if (!/\.py$/i.test(String(scriptPath ?? ''))) return content
+	return String(content).replace(/(^|[;\n])([ \t]*)del[ \t]+/gm, '$1$2X ')
+}
+
 /** 脚本正文判定：通用规则 + 批处理宽松规则。 */
 function classifyScript(content, scriptPath) {
-	const body = normalizeTemplate(stripCommentLines(content))
+	const body = normalizeTemplate(stripCommentLines(maskPythonDel(content, scriptPath)))
 	const rule = classifyText(body)
 	if (rule !== undefined) return rule
 	if (/\.(?:bat|cmd)$/i.test(String(scriptPath ?? ''))) return classifyBatch(body)

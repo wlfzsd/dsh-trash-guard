@@ -38,6 +38,9 @@ const MUST_DENY_TEXT = [
 	['Get-ChildItem . | ForEach-Object { Move-Item $_.FullName .\\dst -Force }', 'overwrite-move'],
 	['diskpart', 'disk-destructive'],
 	['shutil.rmtree(out)', 'runtime-api-delete'],
+	// 2026-11-13：短别名后直接跟 `/` 开关（cmd 合法写法）仍要拦——收紧别名后仍须覆盖
+	['del/q a.txt', 'remove-item'],
+	['rd/s /q out', 'remove-item'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────
@@ -47,6 +50,13 @@ const MUST_DENY_SCRIPT = [
 	['for /d %%i in (*) do rd /s /q "%%i"\r\n', 'loop.bat', 'bat-delete'],
 	['Remove-`\r\nItem .\\data -Force\r\n', 'fold.ps1', 'remove-item'],
 	['shutil.rmtree("/tmp/x")\n', 'clean.py', 'runtime-api-delete'],
+	['del .\\a.txt\r\n', 'x.ps1', 'remove-item'],
+]
+
+// ── ②b 必须放行：脚本正文（2026-11-13 实测误伤） ──────────────────────────
+const MUST_ALLOW_SCRIPT = [
+	['del self._hb_lines[:-40]\n', 'app.py', 'Python del 删的是名字/切片，不是文件'],
+	['// 注释里的 {rm}/{del} 不该命中\n', 'probe.mjs', '注释里的花括号短词'],
 ]
 
 // ── ③ 必须放行：命令字符串（这三类都是真实误伤过的） ──────────────────────
@@ -56,6 +66,9 @@ const MUST_ALLOW_TEXT = [
 	['Write-Output "Remove-Item a.txt"', '纯输出文本'],
 	['Get-ChildItem -Recurse', '纯遍历'],
 	['npm run build', '普通构建'],
+	// 2026-11-13：`(RD.PSK_HEX)` / `(RD, ...)` 里的 RD 是标识符，不是 rd 命令
+	['$d = bytes.fromhex(RD.PSK_HEX)', '属性名 RD. 不是 rd 命令'],
+	['$x = getattr(RD, "PSK_HEX")', '参数里的 RD, 不是 rd 命令'],
 ]
 
 // ── ④ 必须放行：写文档的正文 ──────────────────────────────────────────────
@@ -92,6 +105,10 @@ for (const [cmd, label] of MUST_ALLOW_TEXT) {
 	const got = classifyText(cmd)?.id
 	record(got === undefined, `allow: ${label}`, `got=${got ?? 'allow'}`)
 }
+for (const [src, file, label] of MUST_ALLOW_SCRIPT) {
+	const got = classifyScript(src, file)?.id
+	record(got === undefined, `allow-script: ${label}`, `got=${got ?? 'allow'}`)
+}
 for (const [cmd, label] of MUST_ALLOW_DOC) {
 	record(docPayloadOnly(cmd) === true, `allow-doc: ${label}`, `docPayloadOnly=${docPayloadOnly(cmd)}`)
 }
@@ -101,7 +118,7 @@ for (const [cmd, label] of MUST_NOT_EXEMPT) {
 // 模板占位归一化本身
 record(classifyText(normalizeTemplate('const t = `${REMOVE}` x')) === undefined, 'allow: 模板占位', 'normalizeTemplate 后仍命中')
 
-const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1
+const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1
 console.log(`\n闸门：${total} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))

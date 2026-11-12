@@ -47,10 +47,12 @@ if (!existsSync(args.dir)) {
 
 const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {}
 const since = args.all ? new Date(0) : (args.since ? new Date(args.since) : (state.lastAnalyzedAt ? new Date(state.lastAnalyzedAt) : new Date(Date.now() - 7 * 86400000)))
-// 2026-11-12：夜间复盘要"整夜"而不是"距上次运行几分钟"。--nightly 按本地日 0 点起算，
-// 避免增量游标把窗口切成 5 分钟、让「漏报候选 0」被误读成整夜 0 条。
+// 2026-11-12：夜间复盘要"整夜"而不是"距上次运行几分钟"。
+// 2026-11-13 修：定时任务在 00:00 整跑，按"本日 0 点"起算窗口=0 分钟（实测 0 条，18 条
+// 昨日记录全被漏掉）。改为**本地昨日 0 点**：00:00 跑覆盖完整前一天；白天手动跑覆盖昨日至今，
+// 也不会缩成几分钟。
 const effectiveSince = args.nightly
-	? new Date(new Date().setHours(0, 0, 0, 0))
+	? new Date(new Date().setHours(0, 0, 0, 0) - 86400000)
 	: since
 
 const files = readdirSync(args.dir).filter((f) => /^blocks-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort()
@@ -243,7 +245,7 @@ const lines = []
 lines.push(`# 拦截复盘报告 ${now.toISOString()}`)
 lines.push('')
 lines.push(`- 日志目录：\`${args.dir}\``)
-lines.push(`- 分析窗口：\`${effectiveSince.toISOString()}\` 之后（${args.all ? '全量' : args.nightly ? '本日 0 点起（--nightly）' : '增量'}）`)
+lines.push(`- 分析窗口：\`${effectiveSince.toISOString()}\` 之后（${args.all ? '全量' : args.nightly ? '昨日 0 点起（--nightly）' : '增量'}）`)
 lines.push(`- 日志文件 ${files.length} 个；记录 ${records.length} 条；本次新记录 **${fresh.length}** 条；解析失败 ${parseErrors.length} 条`)
 if (zeroMeaning !== undefined) lines.push(`- **本次 0 条的含义**：${zeroMeaning}`)
 lines.push('')

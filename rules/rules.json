@@ -6,7 +6,7 @@
     {
       "id": "remove-item",
       "label": "Remove-Item / rm / del / rd / rmdir / unlink",
-      "pattern": "(?:^|[\\n;|&({])\\s*(?:remove-item|clear-item|ri|rm|del|erase|rd|rmdir|unlink)\\b",
+      "pattern": "(?:^|[\\n;|&({])\\s*(?:remove-item|clear-item|ri|rm|del|erase|rd|rmdir|unlink)(?=\\s|/|$|[\"'])",
       "flags": "i"
     },
     {
