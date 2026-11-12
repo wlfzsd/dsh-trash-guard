@@ -1,0 +1,89 @@
+{
+  "$schema": "https://example.invalid/dsh-trash-guard/rules.schema.json",
+  "version": 1,
+  "note": "dsh-trash-guard 外置规则。改本文件即时生效（插件按 mtime 热加载），不需要重启 dsh。改坏了会自动回退到内置规则并打 warn。",
+  "command": [
+    {
+      "id": "remove-item",
+      "label": "Remove-Item / rm / del / rd / rmdir / unlink",
+      "pattern": "(?:^|[\\n;|&({])\\s*(?:remove-item|clear-item|ri|rm|del|erase|rd|rmdir|unlink)\\b",
+      "flags": "i"
+    },
+    {
+      "id": "clear-content",
+      "label": "Clear-Content",
+      "pattern": "(?:^|[\\n;|&({])\\s*clear-content\\b",
+      "flags": "i"
+    },
+    {
+      "id": "truncate",
+      "label": "Set-Content -Value '' / $null（清空文件内容）",
+      "pattern": "\\bset-content\\b[^\\n;|]*?\\s-value\\s+(?:''|\"\"|\\$null)(?=\\s|$)",
+      "flags": "i"
+    },
+    {
+      "id": "dotnet-delete",
+      "label": "[System.IO.File]::Delete 一类 .NET 直调",
+      "pattern": "\\[\\s*(?:[A-Za-z0-9_.]*\\.)?(?:file|directory|fileinfo|directoryinfo)\\s*\\]\\s*::\\s*delete",
+      "flags": "i"
+    },
+    {
+      "id": "method-delete",
+      "label": "对象上的 .Delete() / .Delete($true) 方法",
+      "pattern": "\\.\\s*delete\\s*\\(\\s*(?:\\$?(?:true|false)\\s*)?\\)",
+      "flags": "i"
+    },
+    {
+      "id": "git-destructive",
+      "label": "git clean / git reset --hard / git checkout -- .",
+      "pattern": "\\bgit\\s+(?:clean\\b|reset\\s+--hard\\b|checkout\\s+--\\s+\\.)",
+      "flags": "i"
+    },
+    {
+      "id": "encoded-command",
+      "label": "-EncodedCommand（内容不可见，无法审计）",
+      "pattern": "-encodedcommand\\b",
+      "flags": "i"
+    },
+    {
+      "id": "robocopy-purge",
+      "label": "robocopy /MIR|/PURGE（镜像即删除多余项）",
+      "pattern": "\\brobocopy\\b[^\\n]*\\s\\/(?:mir|purge)\\b",
+      "flags": "i"
+    },
+    {
+      "id": "runtime-api-delete",
+      "label": "shutil.rmtree / os.remove / fs.rm / fs.unlink 等脚本 API",
+      "pattern": "\\b(?:shutil\\.rmtree|os\\.remove|os\\.unlink|os\\.rmdir|fs\\.rm\\(|fs\\.rmSync|fs\\.unlink|fs\\.unlinkSync|fs\\.rmdir)\\b",
+      "flags": "i"
+    },
+    {
+      "id": "disk-destructive",
+      "label": "diskpart / Clear-Disk / Format-Volume / vssadmin delete",
+      "pattern": "\\b(?:diskpart|clear-disk|format-volume|initialize-disk|vssadmin\\s+delete)\\b",
+      "flags": "i"
+    },
+    {
+      "id": "overwrite-move",
+      "label": "Move-Item -Force（覆盖目标 = 目标消失）",
+      "pattern": "(?:^|[\\n;|&({])\\s*(?:move-item|mv|move)\\b[^\\n]*?\\s-force\\b",
+      "flags": "i"
+    },
+    {
+      "id": "cmd-wrapper",
+      "label": "cmd /c del|erase|rd|rmdir",
+      "pattern": "\\bcmd(?:\\.exe)?\\s+[^\\n]*?\\/(?:c|k)\\s+[^\\n]*?\\b(?:del|erase|rd|rmdir|deltree)(?=[\\s\"']|$)",
+      "flags": "i"
+    }
+  ],
+  "batch": {
+    "id": "bat-delete",
+    "label": "批处理里的 del/erase/rd/rmdir（行中任意位置）",
+    "pattern": "(?:^|[\\s&|(])(?:del|erase|rd|rmdir)(?=[\\s/\"']|$)",
+    "flags": "i"
+  },
+  "docExempt": {
+    "targets": "(?:add-content|set-content|out-file)\\b[^\\n;|]*?\\s(?:-literalpath|-filepath|-path)?\\s*['\"]?([^\\s'\";|]+\\.(?:md|markdown|txt|json|jsonl|log|csv|ya?ml))['\"]?",
+    "executors": "\\b(?:invoke-expression|iex|start-process|cmd(?:\\.exe)?\\s+\\/[ck]|bash\\s+-c|sh\\s+-c|python[0-9.]*\\s+-[ce]|node\\s+-e)\\b"
+  }
+}

@@ -19,7 +19,7 @@
  * 因为 profile 目录里没有 node_modules，任何裸包导入都会解析失败。
  */
 
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { appendFile, link, mkdir, open, readdir, readFile, rename, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +33,11 @@ const RESTORE_TOOL = 'restore'
 const DEFAULT_CONFIG = {
 	/** 垃圾箱目录：相对工作区，或绝对路径。必须在同一卷上才能 rename。 */
 	trashDir: '_trash',
+	/**
+	 * 2026-11-12：外置规则文件路径。空串=用插件自带的 `rules/rules.json`。
+	 * 改这个文件即时生效（按 mtime 热加载），不需要重启 dsh。
+	 */
+	rulesFile: '',
 	/** 工作区根；不给就用宿主进程的 cwd（dsh 的 workspaceRoot 默认就是它）。 */
 	workspace: '',
 	/** 扫描 `write` 写出的脚本正文。 */
@@ -156,6 +161,108 @@ const SCRIPT_EXT = new Set([
 	'.py', '.js', '.mjs', '.cjs', '.ts', '.vbs', '.reg',
 ])
 
+/**
+ * 2026-11-12 外置规则 + 热加载。
+ *
+ * 动机：规则写在源码里，改一次就得重启 dsh（ESM 按 URL 缓存，改文件不重载模块）。
+ * 现在规则放在 `rules/rules.json`，插件**每次判定前 stat 一次 mtime**，变了就重读——
+ * 这是"读数据文件"不是"加载模块"，所以**改规则即时生效，不用重启**。
+ *
+ * 安全取向：文件缺失/解析失败/正则非法 → 一律退回内置规则并 warn（宁可照旧拦，不可放空）。
+ */
+const DEFAULT_RULES_PATH = fileURLToPath(new URL('./rules/rules.json', import.meta.url))
+let rulesFile = ''
+let rulesState = {
+	mtimeMs: -1,
+	source: 'builtin',
+	command: RULES,
+	batch: null,
+	docTargets: null,
+	docExecutors: null,
+	error: '',
+}
+let warnOnce = () => {}
+
+/** 编译一条外置规则；非法返回 undefined，由调用方整体回退。 */
+function compileRule(entry, kind) {
+	if (entry === null || typeof entry !== 'object') return undefined
+	const id = typeof entry.id === 'string' ? entry.id : ''
+	const pattern = typeof entry.pattern === 'string' ? entry.pattern : ''
+	if (id === '' || pattern === '') return undefined
+	const flags = typeof entry.flags === 'string' && /^[gimsuy]*$/.test(entry.flags) ? entry.flags : 'i'
+	try {
+		return { id, label: typeof entry.label === 'string' ? entry.label : id, re: new RegExp(pattern, flags), kind }
+	} catch {
+		return undefined
+	}
+}
+
+/** 读外置规则文件；返回 undefined 表示"用内置"。 */
+function loadRules(path) {
+	let parsed
+	try {
+		parsed = JSON.parse(readFileSync(path, 'utf8'))
+	} catch (error) {
+		rulesState.error = `规则文件读取/解析失败：${error?.message ?? error}`
+		return undefined
+	}
+	const command = Array.isArray(parsed.command) ? parsed.command.map((entry) => compileRule(entry, 'command')) : []
+	const batch = compileRule(parsed.batch, 'batch')
+	const docTargets = typeof parsed.docExempt?.targets === 'string' ? parsed.docExempt.targets : ''
+	const docExecutors = typeof parsed.docExempt?.executors === 'string' ? parsed.docExempt.executors : ''
+	if (command.length === 0 || command.some((rule) => rule === undefined)) {
+		rulesState.error = '规则文件里 command 为空或含非法规则（正则编译失败）'
+		return undefined
+	}
+	if (batch === undefined) {
+		rulesState.error = '规则文件里 batch 规则非法'
+		return undefined
+	}
+	let docTargetRe
+	let docExecutorRe
+	try {
+		docTargetRe = docTargets === '' ? null : new RegExp(docTargets, 'i')
+		docExecutorRe = docExecutors === '' ? null : new RegExp(docExecutors, 'i')
+	} catch {
+		rulesState.error = '规则文件里 docExempt 正则非法'
+		return undefined
+	}
+	return { command, batch, docTargets: docTargetRe, docExecutors: docExecutorRe, error: '' }
+}
+
+/** 热加载入口：mtime 没变直接返回缓存（每次工具调用的开销=一次 stat）。 */
+function activeRules() {
+	const path = rulesFile
+	if (path === '') return rulesState
+	let mtimeMs
+	try {
+		mtimeMs = statSync(path).mtimeMs
+	} catch {
+		if (rulesState.source !== 'builtin') {
+			rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, batch: null, docTargets: null, docExecutors: null, error: '规则文件不存在，已回退内置规则' }
+			warnOnce(`dsh-trash-guard: ${rulesState.error}`)
+		}
+		return rulesState
+	}
+	if (mtimeMs === rulesState.mtimeMs) return rulesState
+	const loaded = loadRules(path)
+	if (loaded === undefined) {
+		// 文件坏了：保持上一次可用的规则集（不是内置），并告警一次。
+		rulesState = { ...rulesState, mtimeMs, source: rulesState.source === 'external' ? 'external-stale' : 'builtin', error: rulesState.error }
+		warnOnce(`dsh-trash-guard: ${rulesState.error}；继续使用${rulesState.source === 'external-stale' ? '上一版外置' : '内置'}规则`)
+		return rulesState
+	}
+	rulesState = { mtimeMs, source: 'external', ...loaded }
+	warnOnce('')
+	return rulesState
+}
+
+/** apply() 时指定规则文件（空串=用默认路径）。 */
+function setRulesFile(path) {
+	rulesFile = path
+	rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, batch: null, docTargets: null, docExecutors: null, error: '' }
+}
+
 /** 这些工具可能在磁盘上造成增删，影子层只围着它们转。 */
 const MUTATING_TOOLS = new Set(['pwsh', 'bash', 'write', 'edit', 'apply_patch', TRASH_TOOL, RESTORE_TOOL])
 
@@ -222,7 +329,7 @@ function classifyText(text, allow = []) {
 			/* 配置里的坏正则不影响主判定 */
 		}
 	}
-	for (const rule of RULES) if (rule.re.test(body)) return rule
+	for (const rule of activeRules().command) if (rule.re.test(body)) return rule
 	return undefined
 }
 
@@ -239,11 +346,12 @@ const BAT_RULE = {
 
 /** 逐行找批处理删除动词；返回命中行对应的规则或 undefined。 */
 function classifyBatch(content) {
+	const batchRule = activeRules().batch ?? BAT_RULE
 	for (const rawLine of normalizeContinuations(String(content)).split(/\r?\n/)) {
 		const line = rawLine.trim()
 		if (line.length === 0) continue
 		if (/^(?:rem\b|::|@?echo\b|title\b|set\b)/i.test(line)) continue
-		if (BAT_RULE.re.test(line)) return BAT_RULE
+		if (batchRule.re.test(line)) return batchRule
 	}
 	return undefined
 }
@@ -273,8 +381,11 @@ const TEXT_EXECUTOR = /\b(?:invoke-expression|iex|start-process|cmd(?:\.exe)?\s+
  */
 function docPayloadOnly(command) {
 	const text = String(command)
-	if (!DOC_WRITE_TARGET.test(text)) return false
-	if (TEXT_EXECUTOR.test(text)) return false
+	const rules = activeRules()
+	const targetRe = rules.docTargets ?? DOC_WRITE_TARGET
+	const executorRe = rules.docExecutors ?? TEXT_EXECUTOR
+	if (!targetRe.test(text)) return false
+	if (executorRe.test(text)) return false
 	const stripped = text
 		.replace(/@(['"])\r?\n[\s\S]*?\r?\n\1@/g, 'X')
 		// 只折叠**非空**引号内容：`-Value ''` 这种真·清空必须保持原样，否则会被自己豁免掉。
@@ -1059,6 +1170,12 @@ export function apply(ctx, userConfig) {
 	const current = () => config
 
 	const warn = (message) => ctx.logger?.warn?.(message)
+	// 2026-11-12：外置规则 + 热加载（改 rules.json 即时生效，不用重启）。
+	warnOnce = (message) => {
+		if (typeof message === 'string' && message !== '') warn(message)
+	}
+	setRulesFile(config.rulesFile ? resolve(config.rulesFile) : DEFAULT_RULES_PATH)
+	ctx.logger?.info?.(`dsh-trash-guard: 规则来源 ${activeRules().source}（${rulesFile}），改文件即时生效`)
 	const trashRootOf = (exec) =>
 		isAbsolute(config.trashDir) ? resolve(config.trashDir) : join(workspaceOf(ctx, config, exec), config.trashDir)
 
@@ -1119,6 +1236,7 @@ export const __internals = {
 	classifyText, classifyScript, classifyBatch, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
 	inspect, isInside, isScriptPath, clip, matchedLine, RULES, BAT_RULE,
 	riskFactors, denialText, normalizeTemplate, docPayloadOnly,
+	setRulesFile, activeRules, DEFAULT_RULES_PATH,
 	debugSettings, redactSecrets, localDateStamp, sessionKeyOf, writeBlockRecord, writeHeartbeat, DEFAULT_DEBUG_DIR,
 	shadowSync, shadowSweep, isSkipped, walkFiles, DEFAULT_CONFIG,
 }

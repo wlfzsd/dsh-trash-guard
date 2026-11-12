@@ -267,6 +267,31 @@ e2e 的分节结果：
 
 > 测试里的删除指令只作为"被检测的输入样本"或写进 `测试临时\_sandbox\` 的惰性夹具，**一条都没执行**；需要"删除已发生"的场景统一用 `rename()` 移走模拟（等价效果、零删除调用）。
 
+## 7.5 外置规则与热加载（v0.3.0）
+
+规则不再写死在源码里：`rules/rules.json` 存全部命中规则（`command` / `batch` / `docExempt`）。插件**每次判定前 stat 一次 mtime**，变了就重读——这是"读数据文件"不是"加载模块"，所以**改规则即时生效，不用重启 dsh**；只有新机制/新钩子/新工具才需要改源码并重启。
+
+```json
+{
+  "version": 1,
+  "command": [{ "id": "remove-item", "label": "…", "pattern": "…", "flags": "i" }],
+  "batch": { "id": "bat-delete", "label": "…", "pattern": "…", "flags": "i" },
+  "docExempt": { "targets": "…", "executors": "…" }
+}
+```
+
+失效保护（宁可照旧拦，不可放空）：
+
+| 情况 | 行为 |
+|---|---|
+| 文件不存在 | 回退**内置**规则 + warn |
+| JSON/正则非法 | 继续用**上一版可用**规则（`external-stale`）+ warn |
+| 正常 | 源标记 `external`，启动日志打印来源与路径 |
+
+配置项 `rulesFile`（默认空=插件自带 `rules/rules.json`）。改完跑 `node test/guard.mjs`（32 条语料）确认"没放开正确拦截、没新增误伤"。
+
+**分析侧本来就是外置的**：`tools/analyze-blocks.mjs`、`tools/analyze-sessions.mjs` 是独立脚本，由定时任务按需启动，不在插件常驻路径上——插件只在拦截时写一行日志。
+
 ## 8. 已知边界
 
 1. **影子层按工具调用边界收敛**：删了之后要到"下一个改动型工具调用"才进箱；如果之后再无调用，则停留在 `.shadow/` 里（内容仍在，不会丢）。
