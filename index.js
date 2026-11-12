@@ -394,9 +394,19 @@ function docPayloadOnly(command) {
 	return classifyText(stripped) === undefined
 }
 
+/**
+ * 2026-11-12：**刻意不剥注释行**。曾试过"整行 // / # 注释不参与判定"，被自己的回归套件否掉：
+ * `extreme` 里 `#xxxx…(200KB); Remove-Item …` 这种"单行以注释符开头但后面还接着真删除"的样本会因此放行。
+ * 取舍：宁可保留"注释里出现 {rm} 被误拦"这一类误伤，也不放开"注释行后接真删除"。
+ * 需要豁免时用 `rules.json` 的 allow 思路或 config.allow 白名单，不在这里放宽。
+ */
+function stripCommentLines(text) {
+	return String(text)
+}
+
 /** 脚本正文判定：通用规则 + 批处理宽松规则。 */
 function classifyScript(content, scriptPath) {
-	const body = normalizeTemplate(content)
+	const body = normalizeTemplate(stripCommentLines(content))
 	const rule = classifyText(body)
 	if (rule !== undefined) return rule
 	if (/\.(?:bat|cmd)$/i.test(String(scriptPath ?? ''))) return classifyBatch(body)
@@ -1235,7 +1245,7 @@ export function apply(ctx, userConfig) {
 export const __internals = {
 	classifyText, classifyScript, classifyBatch, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
 	inspect, isInside, isScriptPath, clip, matchedLine, RULES, BAT_RULE,
-	riskFactors, denialText, normalizeTemplate, docPayloadOnly,
+	riskFactors, denialText, normalizeTemplate, docPayloadOnly, stripCommentLines,
 	setRulesFile, activeRules, DEFAULT_RULES_PATH,
 	debugSettings, redactSecrets, localDateStamp, sessionKeyOf, writeBlockRecord, writeHeartbeat, DEFAULT_DEBUG_DIR,
 	shadowSync, shadowSweep, isSkipped, walkFiles, DEFAULT_CONFIG,
