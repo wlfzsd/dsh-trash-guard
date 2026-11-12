@@ -180,6 +180,22 @@ const retireRecords = (await readManifestLines()).filter((record) => record.op =
 check('一次删除只记一条（不重复）', retireRecords.length, 1)
 check('retire 的 id 来自 trash 工具', retireRecords[0].id, retired.moved[0].id)
 
+// ── isSkipped：任意层级的 skipDirs 都要跳过（2026-11-12 回归） ────────────────
+// 事故：`插件发布\x\.git\refs\...` 只在路径**首段**比对 skipDirs，嵌套 .git 仍被建影，
+// 每次 git 提交都在 _trash 里留噪声。这里把"任意层级"固化成门禁。
+const { isSkipped } = plugin.__internals
+const SKIP = ['.git', 'node_modules', '__pycache__', '.venv']
+const SKIP_CASES = [
+	['插件发布/x/.git/refs/heads/main', true, '嵌套 .git（正斜杠）'],
+	['插件发布\\x\\.git\\config', true, '嵌套 .git（反斜杠）'],
+	['a/b/node_modules/pkg/index.js', true, '嵌套 node_modules'],
+	['deep/.venv/lib/x.py', true, '嵌套 .venv'],
+	['_trash/2026-11-12/1-a.txt', true, '垃圾箱自身（任意层级）'],
+	['src/app.js', false, '普通文件不跳'],
+	['git-notes/x.txt', false, '名字含 git 但不是 .git 段'],
+]
+for (const [rel, expected, label] of SKIP_CASES) check(`isSkipped: ${label}`, isSkipped(rel, '_trash', SKIP), expected)
+
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))

@@ -16,7 +16,7 @@ const mod = await import(new URL('../index.js', import.meta.url).href)
 const { classifyText, classifyScript, classifyBatch, DEFAULT_DEBUG_DIR } = mod.__internals
 
 function parseArgs(argv) {
-	const out = { dir: DEFAULT_DEBUG_DIR, since: undefined, all: false, out: undefined, json: false, trash: undefined }
+	const out = { dir: DEFAULT_DEBUG_DIR, since: undefined, all: false, nightly: false, out: undefined, json: false, trash: undefined }
 	for (let i = 0; i < argv.length; i += 1) {
 		const a = argv[i]
 		if (a === '--dir') out.dir = argv[++i]
@@ -24,9 +24,10 @@ function parseArgs(argv) {
 		else if (a === '--out') out.out = argv[++i]
 		else if (a === '--trash') out.trash = argv[++i]
 		else if (a === '--all') out.all = true
+		else if (a === '--nightly') out.nightly = true
 		else if (a === '--json') out.json = true
 		else if (a === '--help' || a === '-h') {
-			console.log('node tools/analyze-blocks.mjs [--dir <dir>] [--since <ISO>] [--all] [--trash <workspace/_trash/manifest.jsonl>] [--out <path>] [--json]')
+			console.log('node tools/analyze-blocks.mjs [--dir <dir>] [--since <ISO>|--nightly|--all] [--trash <workspace/_trash/manifest.jsonl>] [--out <path>] [--json]')
 			process.exit(0)
 		}
 	}
@@ -46,6 +47,11 @@ if (!existsSync(args.dir)) {
 
 const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {}
 const since = args.all ? new Date(0) : (args.since ? new Date(args.since) : (state.lastAnalyzedAt ? new Date(state.lastAnalyzedAt) : new Date(Date.now() - 7 * 86400000)))
+// 2026-11-12：夜间复盘要"整夜"而不是"距上次运行几分钟"。--nightly 按本地日 0 点起算，
+// 避免增量游标把窗口切成 5 分钟、让「漏报候选 0」被误读成整夜 0 条。
+const effectiveSince = args.nightly
+	? new Date(new Date().setHours(0, 0, 0, 0))
+	: since
 
 const files = readdirSync(args.dir).filter((f) => /^blocks-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort()
 const records = []
@@ -65,7 +71,7 @@ for (const file of files) {
 	})
 }
 
-const fresh = records.filter((r) => new Date(r.at) > since)
+const fresh = records.filter((r) => new Date(r.at) > effectiveSince)
 
 /**
  * 2026-11-11：漏报候选。
@@ -128,6 +134,12 @@ if (args.trash !== undefined) {
 			} catch {
 				continue
 			}
+			// 2026-11-12：新版把"编辑产生的旧版本"记成 op='version'；旧版记成 op='trash' + note 含"已被替换"。
+			// 两种都要认，否则升级当晚会把版本快照误计成删除。
+			if (rec.op === 'version') {
+				versionSnapshots.push(rec)
+				continue
+			}
 			if (rec.op !== 'trash') continue
 			const note = String(rec.note ?? '')
 			if (note.includes('原文件已消失')) misses.push(rec)
@@ -137,7 +149,7 @@ if (args.trash !== undefined) {
 		console.error(`提醒：--trash 指定的台账不存在：${args.trash}`)
 	}
 }
-const freshMisses = misses.filter((m) => new Date(m.at) > since)
+const freshMisses = misses.filter((m) => new Date(m.at) > effectiveSince)
 const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1)
 const byRule = new Map()
 const byWhere = new Map()
@@ -231,7 +243,7 @@ const lines = []
 lines.push(`# 拦截复盘报告 ${now.toISOString()}`)
 lines.push('')
 lines.push(`- 日志目录：\`${args.dir}\``)
-lines.push(`- 分析窗口：\`${since.toISOString()}\` 之后（${args.all ? '全量' : '增量'}）`)
+lines.push(`- 分析窗口：\`${effectiveSince.toISOString()}\` 之后（${args.all ? '全量' : args.nightly ? '本日 0 点起（--nightly）' : '增量'}）`)
 lines.push(`- 日志文件 ${files.length} 个；记录 ${records.length} 条；本次新记录 **${fresh.length}** 条；解析失败 ${parseErrors.length} 条`)
 if (zeroMeaning !== undefined) lines.push(`- **本次 0 条的含义**：${zeroMeaning}`)
 lines.push('')
@@ -333,7 +345,7 @@ writeFileSync(statePath, `${JSON.stringify({ lastAnalyzedAt: now.toISOString(), 
 
 const summary = {
 	dir: args.dir,
-	since: since.toISOString(),
+	since: effectiveSince.toISOString(),
 	newRecords: fresh.length,
 	totalRecords: records.length,
 	runtime: { status: runtimeStatus, moduleMtimeMs: heartbeat?.moduleMtimeMs, diskMtimeMs, heartbeatAt: heartbeat?.at },

@@ -573,7 +573,9 @@ async function readManifest(manifestPath) {
 			continue
 		}
 		if (record.op === 'restore' && typeof record.id === 'string') restored.add(record.id)
-		else if (typeof record.id === 'string') entries.push(record)
+		// 2026-11-12：只把 op='trash'（真正的移入）当作可恢复条目；
+		// op='version' 是编辑产生的旧版本快照，不参与 restore，也不该占「可恢复」列表。
+		else if (record.op === 'trash' && typeof record.id === 'string') entries.push(record)
 	}
 	return entries.filter((entry) => !restored.has(entry.id))
 }
@@ -603,7 +605,9 @@ async function retireShadow(root, trashRoot, target) {
 function isSkipped(rel, trashDir, skipDirs) {
 	const segments = rel.split(/[\\/]/)
 	if (segments.includes(trashDir)) return true
-	return skipDirs.includes(segments[0])
+	// 2026-11-12：以前只比对首段，导致 `插件发布\x\.git\refs\...` 这类嵌套目录仍被建影、
+	// 每次 git 提交都在 _trash 里留噪声。改为任意层级命中即跳过。
+	return segments.some((segment) => skipDirs.includes(segment))
 }
 
 /** 广度不限、深度优先地收集文件相对路径（只收普通文件，上限 maxFiles）。 */
@@ -694,13 +698,15 @@ async function shadowSync(root, trashRoot, config, log, cache = new Map()) {
 				await mkdir(dirname(dest), { recursive: true })
 				await rename(mirror, dest)
 				superseded.push({
-					op: 'trash',
+					// 2026-11-12：`op: 'version'` 而不是 'trash'——这是"编辑产生的旧版本快照"，
+					// 不是删除。混在 trash 流里会让删除台账被噪声淹没（本机实测 140 条里 123 条是它）。
+					op: 'version',
 					id: `${stamp}-r${stats.refreshed + 1}`,
 					at: new Date().toISOString(),
 					from: live,
 					to: dest,
 					kind: 'file',
-					note: '影子层：该路径已被替换，旧版本收进垃圾箱',
+					note: '影子层：该路径已被替换，旧版本收进垃圾箱（版本快照，不是删除）',
 				})
 				stats.refreshed += 1
 			}
