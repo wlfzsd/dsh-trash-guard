@@ -196,6 +196,30 @@ const SKIP_CASES = [
 ]
 for (const [rel, expected, label] of SKIP_CASES) check(`isSkipped: ${label}`, isSkipped(rel, '_trash', SKIP), expected)
 
+// ── 误伤回归（2026-11-12）：只在文本里"提到"，不算删除 ─────────────────────
+const { classifyText, docPayloadOnly, normalizeTemplate } = plugin.__internals
+const MV = 'Move-Item'
+const FC = '-Force'
+const KL = 'Remove-Item'
+
+// ① overwrite-move 加了语句起始锚点：搜索/输出里提到不再命中，真执行仍命中
+check('误伤: 搜索文本里的 move 字样', classifyText(`Select-String -Pattern "${MV} ${FC}" .\\a.md`)?.id, undefined)
+check('误伤: 输出文本里的 move 字样', classifyText(`Write-Output "${MV} a b ${FC}"`)?.id, undefined)
+check('正例: 真执行 move -Force 仍拦', classifyText(`${MV} .\\a.txt .\\b.txt ${FC}`)?.id, 'overwrite-move')
+
+// ② 模板占位符 ${...} / {{...}} 在脚本正文里不算代码
+check('误伤: 脚本里的模板占位', classifyText(normalizeTemplate('const t = `${REMOVE}` x'))?.id, undefined)
+check('正例: 脚本里真删除仍拦', classifyText(`${KL} .\\a.txt`)?.id, 'remove-item')
+
+// ③ 往非可执行文档写正文（here-string / 引号）豁免；真清空、写脚本、含执行器都不豁免
+const docHere = `Add-Content -LiteralPath .\\notes.md -Value @'\n${KL} .\\a.txt\n'@`
+check('误伤: 写 .md 的 here-string 正文', docPayloadOnly(docHere), true)
+check('误伤: 写 .json 的引号正文', docPayloadOnly(`Set-Content .\\a.json -Value '${KL} x'`), true)
+check('正例: 文档正文里夹真删除必须拦', docPayloadOnly(`${docHere}; ${KL} .\\b.txt`), false)
+check('正例: 写脚本 must 拦', docPayloadOnly(`Add-Content -LiteralPath .\\run.ps1 -Value @'\n${KL} .\\a.txt\n'@`), false)
+check('正例: 含执行器必须拦', docPayloadOnly(`Add-Content .\\notes.md -Value @'\nInvoke-Expression x\n'@`), false)
+check('正例: 真清空仍拦', docPayloadOnly(`Set-Content .\\a.md -Value ''`), false)
+
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))

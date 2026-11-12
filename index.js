@@ -138,7 +138,10 @@ const RULES = [
 	{
 		id: 'overwrite-move',
 		label: 'Move-Item -Force（覆盖目标 = 目标消失）',
-		re: /\bmove-item\b[^\n]*?-force\b/i,
+		// 2026-11-12 误伤修复：原来没有语句起始锚点，`Select-String -Pattern "Move-Item -Force"` 这种
+		// **只是搜索文本**的调用也会被判成删除。加 STATEMENT 锚点后，只有真正在语句起始处执行的
+		// move 才算；引号/参数里提到这串字不再命中。
+		re: new RegExp(STATEMENT + String.raw`(?:move-item|mv|move)\b[^\n]*?\s-force\b`, 'i'),
 	},
 	{
 		id: 'cmd-wrapper',
@@ -245,11 +248,47 @@ function classifyBatch(content) {
 	return undefined
 }
 
+/**
+ * 2026-11-12 误伤修复：脚本正文里的模板占位符（`${DEL}`、`{{ cmd }}`）不是代码。
+ * 它们会把 `{` 变成语句起始锚点，让 `del`/`rm` 这类短词在占位符名里被误命中
+ * （实测：写测试脚本时 `${DEL}` 被判成删除）。只在**写入侧/脚本正文**归一化，
+ * 命令侧不动——命令里的 `${...}` 是真实变量展开，仍需 fail-closed。
+ */
+function normalizeTemplate(text) {
+	return String(text)
+		.replace(/\$\{[^}\n]{1,60}\}/g, 'X')
+		.replace(/\{\{[^}\n]{1,60}\}\}/g, 'X')
+}
+
+/** 往"非可执行文档"里写正文的 cmdlet（内容不会被当代码跑）。 */
+const DOC_WRITE_TARGET = /(?:add-content|set-content|out-file)\b[^\n;|]*?\s(?:-literalpath|-filepath|-path)?\s*['"]?([^\s'";|]+\.(?:md|markdown|txt|json|jsonl|log|csv|ya?ml))['"]?/i
+/** 命令里若出现这些"把文本当代码执行"的入口，就不适用文档豁免。 */
+const TEXT_EXECUTOR = /\b(?:invoke-expression|iex|start-process|cmd(?:\.exe)?\s+\/[ck]|bash\s+-c|sh\s+-c|python[0-9.]*\s+-[ce]|node\s+-e)\b/i
+
+/**
+ * 2026-11-12 误伤修复：把"只是写进 .md/.txt/.json 的正文"从删除判定里豁免。
+ * 实测误伤：`Add-Content notes.md -Value @'…Move-Item -Force…'@` 把文档写作当成删除。
+ * 三条闸门同时成立才豁免：①目标是非可执行文档后缀 ②命令不含文本执行器 ③去掉 here-string
+ * 与引号内容后已无任何命中。任何一条不成立 → 维持拦截（fail-closed）。
+ */
+function docPayloadOnly(command) {
+	const text = String(command)
+	if (!DOC_WRITE_TARGET.test(text)) return false
+	if (TEXT_EXECUTOR.test(text)) return false
+	const stripped = text
+		.replace(/@(['"])\r?\n[\s\S]*?\r?\n\1@/g, 'X')
+		// 只折叠**非空**引号内容：`-Value ''` 这种真·清空必须保持原样，否则会被自己豁免掉。
+		.replace(/"[^"\n]+"/g, 'X')
+		.replace(/'[^'\n]+'/g, 'X')
+	return classifyText(stripped) === undefined
+}
+
 /** 脚本正文判定：通用规则 + 批处理宽松规则。 */
 function classifyScript(content, scriptPath) {
-	const rule = classifyText(content)
+	const body = normalizeTemplate(content)
+	const rule = classifyText(body)
 	if (rule !== undefined) return rule
-	if (/\.(?:bat|cmd)$/i.test(String(scriptPath ?? ''))) return classifyBatch(content)
+	if (/\.(?:bat|cmd)$/i.test(String(scriptPath ?? ''))) return classifyBatch(body)
 	return undefined
 }
 
@@ -483,7 +522,10 @@ async function inspect(tool, args, config, root) {
 		const command = payload.command
 		if (typeof command !== 'string' || command.length === 0) return undefined
 		const rule = classifyText(command, config.allow)
-		if (rule !== undefined) return { where: 'command', rule, snippet: clip(command), risks: riskFactors(command) }
+		if (rule !== undefined) {
+			// 2026-11-12：只写进文档的正文不算删除（详见 docPayloadOnly）。
+			if (!docPayloadOnly(command)) return { where: 'command', rule, snippet: clip(command), risks: riskFactors(command) }
+		}
 		// 命令文本本身干净，但它启动的脚本可能不干净：启动前读正文。
 		const launched = config.scanLaunchedScripts ? await scanLaunchedScripts(command, root ?? process.cwd(), config) : undefined
 		return launched === undefined ? undefined : { ...launched, risks: riskFactors(launched.snippet) }
@@ -1076,7 +1118,7 @@ export function apply(ctx, userConfig) {
 export const __internals = {
 	classifyText, classifyScript, classifyBatch, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
 	inspect, isInside, isScriptPath, clip, matchedLine, RULES, BAT_RULE,
-	riskFactors, denialText,
+	riskFactors, denialText, normalizeTemplate, docPayloadOnly,
 	debugSettings, redactSecrets, localDateStamp, sessionKeyOf, writeBlockRecord, writeHeartbeat, DEFAULT_DEBUG_DIR,
 	shadowSync, shadowSweep, isSkipped, walkFiles, DEFAULT_CONFIG,
 }
