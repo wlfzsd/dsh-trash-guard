@@ -16,12 +16,13 @@
 //   ② 每次结束写回 lastScanEnd，下次从它开始，不重复分析；
 //   ③ 命中数为 0 但时间窗很长时，必须报警"疑似格式变化"，不准静默当作"无拦截"。
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import zlib from 'node:zlib'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const DEFAULT_SESSIONS = join(process.env.DSH_HOME ?? 'D:\\Users\\Administrator\\.dsh', 'sessions')
+const DEFAULT_SESSIONS = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'sessions')
 const DEFAULT_STATE = 'E:\\dsh-trash-guard-logs\\_session-scan.json'
 const DEFAULT_OUT_DIR = 'E:\\dsh-trash-guard-logs\\sessions'
 /** 一级锚：拒绝决策里的稳定错误码（实测 228 次命中，新旧文案都有）。 */

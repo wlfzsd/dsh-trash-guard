@@ -12,11 +12,13 @@
  */
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const DSH_TOOLS = 'file:///D:/Users/Administrator/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js'
+const DSH_TOOLS = pathToFileURL(
+	join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'),
+).href
 const PLUGIN = pathToFileURL(resolve(import.meta.dirname, '..', 'index.js')).href
 const RUN = `run-${new Date().toISOString().replace(/[:.]/g, '-')}`
 const ROOT = join(tmpdir(), 'dsh-trash-guard-tests', RUN)

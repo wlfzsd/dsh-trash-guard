@@ -142,7 +142,7 @@ restore({ ids: ["?"] })                       # 只列出最近 20 条可恢复 
 **分析器**（零依赖，可手动跑）：
 
 ```powershell
-node D:\Users\Administrator\.dsh\plugins\dsh-trash-guard\tools\analyze-blocks.mjs
+node %DSH_HOME%\plugins\dsh-trash-guard\tools\analyze-blocks.mjs
 # 选项：--dir <目录> --since <ISO> --nightly --all --trash <workspace>\_trash\manifest.jsonl --out <报告路径> --json
 #   --nightly = 窗口取本地日 0 点起（夜间复盘用；否则增量游标会把窗口切成几分钟）
 # 退出码：0 正常（含"无新记录"）；2 目录不存在；1 参数/读取错误
@@ -158,7 +158,7 @@ node D:\Users\Administrator\.dsh\plugins\dsh-trash-guard\tools\analyze-blocks.mj
 
 ## 4. 安装
 
-**本机当前状态（2026-11-10 实测）**：代码本体在 `D:\Users\Administrator\.dsh\plugins\dsh-trash-guard\`，profile 里只有一行引用——`profiles\web\cordis.patch.yml` 第 39-44 行。
+**本机当前状态（2026-11-10 实测）**：代码本体在 `%DSH_HOME%\plugins\dsh-trash-guard\`，profile 里只有一行引用——`profiles\web\cordis.patch.yml` 第 39-44 行。
 
 ```yaml
 - insert:
@@ -204,7 +204,7 @@ node D:\Users\Administrator\.dsh\plugins\dsh-trash-guard\tools\analyze-blocks.mj
 5. `trash` → `restore` 往返实测：样本 113 B / SHA256 `104AC565…` 移入 `_trash/<stamp>/1-样本.txt`、manifest 记 `op=trash`，restore 后回到原位且哈希逐字节一致、manifest 追加 `op=restore`；
 6. 插件自带三套断言全过：`smoke` 54 项、`e2e` 145 项、`extreme` 41 项 → 240 项 `ALL PASS`（exit 0）。
 
-改动前的备份：patch 在 `D:\Users\Administrator\.dsh\backup\dsh-patch-backup\cordis.patch.yml_<时间戳>.bak`，插件文件在 `D:\Users\Administrator\.dsh\backup\dsh-plugin-backup\<时间戳>\`。
+改动前的备份：patch 在 `%DSH_HOME%\backup\dsh-patch-backup\cordis.patch.yml_<时间戳>.bak`，插件文件在 `%DSH_HOME%\backup\dsh-plugin-backup\<时间戳>\`。
 
 **卸载**：删掉那段 `- insert:` 块，重启 dsh 即可；`_trash/` 留着不影响任何东西。
 
@@ -288,7 +288,7 @@ e2e 的分节结果：
 | JSON/正则非法 | 继续用**上一版可用**规则（`external-stale`）+ warn |
 | 正常 | 源标记 `external`，启动日志打印来源与路径 |
 
-配置项 `rulesFile`（默认空=插件自带 `rules/rules.json`）。改完跑 `node test/guard.mjs`（32 条语料）确认"没放开正确拦截、没新增误伤"。
+配置项 `rulesFile`（默认空=插件自带 `rules/rules.json`）。改完跑 `node test/guard.mjs` 确认"没放开正确拦截、没新增误伤"。
 
 **分析侧本来就是外置的**：`tools/analyze-blocks.mjs`、`tools/analyze-sessions.mjs` 是独立脚本，由定时任务按需启动，不在插件常驻路径上——插件只在拦截时写一行日志。
 
@@ -303,3 +303,10 @@ e2e 的分节结果：
 7. **编码已处理**：按 BOM 解码（UTF-16LE/BE、UTF-8 BOM），无 BOM 时按 NUL 占比猜 UTF-16——PowerShell 5.1 的 `>` / `Out-File` 默认写 UTF-16LE，不处理就会整篇扫不到。
 7. **不接管宿主自带的 `fs` 工具删除路径**（`fs/delete-intent` 钩子没接）：本 profile 没有独立 delete 工具，`apply_patch` 默认关闭；若将来开了，另加一个钩子即可。
 8. 本插件**不做** Windows 回收站集成（它会被系统按配额自动清空，且需要 `IFileOperation`，与本机"零删除"约定冲突）。
+
+## 9. 变更记录（近期）
+
+- **v0.3.3（2026-11-13）**：启动识别补齐——Python/PowerShell/bash 直启、`cmd /c` 套解释器、`Start-Process` 都会在启动前读脚本正文；`node` 直启沿用写入侧扫描。
+- **v0.3.2（2026-11-13）**：`remove-item` 动词边界收紧（`(RD.`、`(rd,`、注释里的 `{rm}`/`{del}` 不再误伤）；`.py` 正文里的语句级 `del` 正规化（Python 的 `del` 删不了文件）；`--nightly` 窗口改为"本地昨日 0 点"，修掉 00:00 跑时窗口为 0 的缺陷。
+- **v0.3.1（2026-11-12）**：注释行剥离实验回退（被 `extreme` 回归否掉），保持 fail-closed。
+- **v0.3.0（2026-11-12）**：规则外置到 `rules/rules.json`，按 mtime 热加载，改规则不用重启。
