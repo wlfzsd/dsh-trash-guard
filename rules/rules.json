@@ -1,7 +1,8 @@
 {
   "$schema": "https://example.invalid/dsh-trash-guard/rules.schema.json",
   "version": 1,
-  "note": "dsh-trash-guard 外置规则。改本文件即时生效（插件按 mtime 热加载），不需要重启 dsh。改坏了会自动回退到内置规则并打 warn。",
+  "note": "dsh-trash-guard 外置规则。command=黑名单（命中即拦）；allow=白名单（判定前把匹配段掩成 X，只掩片段不丢整行，条目必须写窄）。改本文件即时生效（插件按 mtime 热加载），不需要重启 dsh；改坏了会自动回退到内置规则并打 warn。",
+  "allow": [],
   "command": [
     {
       "id": "remove-item",

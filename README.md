@@ -269,16 +269,19 @@ e2e 的分节结果：
 
 ## 7.5 外置规则与热加载（v0.3.0）
 
-规则不再写死在源码里：`rules/rules.json` 存全部命中规则（`command` / `batch` / `docExempt`）。插件**每次判定前 stat 一次 mtime**，变了就重读——这是"读数据文件"不是"加载模块"，所以**改规则即时生效，不用重启 dsh**；只有新机制/新钩子/新工具才需要改源码并重启。
+规则不再写死在源码里：`rules/rules.json` 存黑名单（`command` / `batch`）、白名单（`allow`）与文档豁免（`docExempt`）。插件**每次判定前 stat 一次 mtime**，变了就重读——这是"读数据文件"不是"加载模块"，所以**改规则即时生效，不用重启 dsh**；只有新机制/新钩子/新工具才需要改源码并重启。
 
 ```json
 {
   "version": 1,
   "command": [{ "id": "remove-item", "label": "…", "pattern": "…", "flags": "i" }],
+  "allow": [],
   "batch": { "id": "bat-delete", "label": "…", "pattern": "…", "flags": "i" },
   "docExempt": { "targets": "…", "executors": "…" }
 }
 ```
+
+**黑名单 vs 白名单**：`command` 是黑名单（命中即拦）；`allow` 是白名单（判定前把**匹配段**掩成 `X`）。白名单只掩匹配到的片段、不丢整行——同一行后面若还有真删除，掩码后仍会被黑名单拦到。条目要写窄（例：`rd\s*=\s*`），默认 `flags: "gim"`；不要写整行/通配，也不要把可能被同名函数遮蔽的 cmdlet 参数写进去。`node test/guard.mjs` 会拿 MUST_DENY 样本逐条验证白名单没吞掉正确拦截。
 
 失效保护（宁可照旧拦，不可放空）：
 
@@ -306,6 +309,7 @@ e2e 的分节结果：
 
 ## 9. 变更记录（近期）
 
+- **v0.3.4（2026-11-14）**：`rules/rules.json` 新增 `allow` 白名单（掩码式，热加载）；`node test/guard.mjs` 增加白名单安全校验（不得吞掉 MUST_DENY）与端到端载入用例。
 - **v0.3.3（2026-11-13）**：启动识别补齐——Python/PowerShell/bash 直启、`cmd /c` 套解释器、`Start-Process` 都会在启动前读脚本正文；`node` 直启沿用写入侧扫描。
 - **v0.3.2（2026-11-13）**：`remove-item` 动词边界收紧（`(RD.`、`(rd,`、注释里的 `{rm}`/`{del}` 不再误伤）；`.py` 正文里的语句级 `del` 正规化（Python 的 `del` 删不了文件）；`--nightly` 窗口改为"本地昨日 0 点"，修掉 00:00 跑时窗口为 0 的缺陷。
 - **v0.3.1（2026-11-12）**：注释行剥离实验回退（被 `extreme` 回归否掉），保持 fail-closed。

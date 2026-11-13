@@ -176,6 +176,7 @@ let rulesState = {
 	mtimeMs: -1,
 	source: 'builtin',
 	command: RULES,
+	allow: [],
 	batch: null,
 	docTargets: null,
 	docExecutors: null,
@@ -189,7 +190,8 @@ function compileRule(entry, kind) {
 	const id = typeof entry.id === 'string' ? entry.id : ''
 	const pattern = typeof entry.pattern === 'string' ? entry.pattern : ''
 	if (id === '' || pattern === '') return undefined
-	const flags = typeof entry.flags === 'string' && /^[gimsuy]*$/.test(entry.flags) ? entry.flags : 'i'
+	const rawFlags = typeof entry.flags === 'string' && /^[gimsuy]*$/.test(entry.flags) ? entry.flags : kind === 'allow' ? 'gim' : 'i'
+	const flags = kind === 'allow' && !rawFlags.includes('g') ? `${rawFlags}g` : rawFlags
 	try {
 		return { id, label: typeof entry.label === 'string' ? entry.label : id, re: new RegExp(pattern, flags), kind }
 	} catch {
@@ -208,6 +210,8 @@ function loadRules(path) {
 	}
 	const command = Array.isArray(parsed.command) ? parsed.command.map((entry) => compileRule(entry, 'command')) : []
 	const batch = compileRule(parsed.batch, 'batch')
+	// 2026-11-14：白名单（allow）——编译失败的条目直接丢弃（宁少放，不误放）；空数组合法。
+	const allow = Array.isArray(parsed.allow) ? parsed.allow.map((entry) => compileRule(entry, 'allow')).filter((rule) => rule !== undefined) : []
 	const docTargets = typeof parsed.docExempt?.targets === 'string' ? parsed.docExempt.targets : ''
 	const docExecutors = typeof parsed.docExempt?.executors === 'string' ? parsed.docExempt.executors : ''
 	if (command.length === 0 || command.some((rule) => rule === undefined)) {
@@ -227,7 +231,7 @@ function loadRules(path) {
 		rulesState.error = '规则文件里 docExempt 正则非法'
 		return undefined
 	}
-	return { command, batch, docTargets: docTargetRe, docExecutors: docExecutorRe, error: '' }
+	return { command, batch, allow, docTargets: docTargetRe, docExecutors: docExecutorRe, error: '' }
 }
 
 /** 热加载入口：mtime 没变直接返回缓存（每次工具调用的开销=一次 stat）。 */
@@ -239,7 +243,7 @@ function activeRules() {
 		mtimeMs = statSync(path).mtimeMs
 	} catch {
 		if (rulesState.source !== 'builtin') {
-			rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, batch: null, docTargets: null, docExecutors: null, error: '规则文件不存在，已回退内置规则' }
+			rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, allow: [], batch: null, docTargets: null, docExecutors: null, error: '规则文件不存在，已回退内置规则' }
 			warnOnce(`dsh-trash-guard: ${rulesState.error}`)
 		}
 		return rulesState
@@ -260,7 +264,7 @@ function activeRules() {
 /** apply() 时指定规则文件（空串=用默认路径）。 */
 function setRulesFile(path) {
 	rulesFile = path
-	rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, batch: null, docTargets: null, docExecutors: null, error: '' }
+	rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, allow: [], batch: null, docTargets: null, docExecutors: null, error: '' }
 }
 
 /** 这些工具可能在磁盘上造成增删，影子层只围着它们转。 */
@@ -319,9 +323,22 @@ function matchedLine(text, re) {
 	return line ?? clip(text)
 }
 
+/**
+ * 2026-11-14：白名单（rules.json 的 allow）——判定前把“已确认误伤”的片段掩成 X。
+ * 只掩匹配段、不丢整行：同一行里若还有真删除，掩码后仍会被黑名单拦到。
+ * 条目必须写窄（例：`rd\s*=\s*`），不许写整行/通配；闸门会拿 MUST_DENY 样本逐条验它没吞掉正确拦截。
+ */
+function applyAllow(text, allowRules) {
+	if (!Array.isArray(allowRules) || allowRules.length === 0) return String(text)
+	let body = String(text)
+	for (const rule of allowRules) body = body.replace(rule.re, 'X')
+	return body
+}
+
 /** 文本里是否有删除动作；返回规则对象或 undefined。 */
 function classifyText(text, allow = []) {
-	const body = normalizeContinuations(text)
+	const rules = activeRules()
+	let body = normalizeContinuations(text)
 	for (const pattern of allow) {
 		try {
 			if (new RegExp(pattern, 'i').test(body)) return undefined
@@ -329,7 +346,8 @@ function classifyText(text, allow = []) {
 			/* 配置里的坏正则不影响主判定 */
 		}
 	}
-	for (const rule of activeRules().command) if (rule.re.test(body)) return rule
+	body = applyAllow(body, rules.allow)
+	for (const rule of rules.command) if (rule.re.test(body)) return rule
 	return undefined
 }
 
@@ -347,8 +365,9 @@ const BAT_RULE = {
 /** 逐行找批处理删除动词；返回命中行对应的规则或 undefined。 */
 function classifyBatch(content) {
 	const batchRule = activeRules().batch ?? BAT_RULE
+	const allowRules = activeRules().allow
 	for (const rawLine of normalizeContinuations(String(content)).split(/\r?\n/)) {
-		const line = rawLine.trim()
+		const line = applyAllow(rawLine.trim(), allowRules)
 		if (line.length === 0) continue
 		if (/^(?:rem\b|::|@?echo\b|title\b|set\b)/i.test(line)) continue
 		if (batchRule.re.test(line)) return batchRule
@@ -1273,7 +1292,7 @@ export function apply(ctx, userConfig) {
 
 /** 仅供单元测试使用：导出纯函数，不影响加载。 */
 export const __internals = {
-	classifyText, classifyScript, classifyBatch, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
+	classifyText, classifyScript, classifyBatch, applyAllow, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
 	inspect, isInside, isScriptPath, clip, matchedLine, RULES, BAT_RULE,
 	riskFactors, denialText, normalizeTemplate, docPayloadOnly, stripCommentLines,
 	setRulesFile, activeRules, DEFAULT_RULES_PATH,

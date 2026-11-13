@@ -17,9 +17,13 @@
  * 跑法：node test/guard.mjs [--selftest]
  *   --selftest：故意把一条期望反转，确认闸门会 FAIL（防"永远 PASS 的假门禁"）。
  */
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 const PLUGIN = new URL('../index.js', import.meta.url).href
 const plugin = await import(PLUGIN)
-const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate, launchedScriptRefs, setRulesFile, DEFAULT_RULES_PATH } = plugin.__internals
+const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate, launchedScriptRefs, setRulesFile, DEFAULT_RULES_PATH, applyAllow, activeRules } = plugin.__internals
 
 // 2026-11-14：闸门此前没调 apply()，rulesFile 为空 → 测的是**内置兜底**，改 rules.json 测不到。
 // 夜间流程改的是外置规则，闸门必须先指向它，否则“ALL PASS”是假的。
@@ -150,7 +154,43 @@ for (const [cmd, label] of MUST_NOT_EXEMPT) {
 // 模板占位归一化本身
 record(classifyText(normalizeTemplate('const t = `${REMOVE}` x')) === undefined, 'allow: 模板占位', 'normalizeTemplate 后仍命中')
 
-const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1
+// ── ⑦ 白名单机制（2026-11-14）：只掩匹配段，不丢整行 ────────────────────
+const demoAllow = [{ id: 'demo', re: /rd\s*=\s*/gi }]
+record(applyAllow('rd = csv.reader(fh)', demoAllow) === 'Xcsv.reader(fh)', 'allow-mask: 片段掩码', applyAllow('rd = csv.reader(fh)', demoAllow))
+const mixed = applyAllow('rd = 1; Remove-Item x', demoAllow)
+record(classifyText(mixed)?.id === 'remove-item', 'allow-mask: 同行真删除仍拦', `masked=${JSON.stringify(mixed)} got=${classifyText(mixed)?.id ?? 'ALLOW'}`)
+
+// ── ⑧ 真实白名单条目：不得吞掉任何 MUST_DENY 样本（空 allow 时 0 条） ─────
+const realAllow = activeRules().allow
+let allowChecks = 0
+for (const rule of realAllow) {
+	for (const [cmd] of MUST_DENY_TEXT) {
+		allowChecks += 1
+		const masked = applyAllow(cmd, [rule])
+		const still = classifyText(masked)?.id
+		record(still !== undefined, `allow-safe: ${rule.id} × ${cmd.slice(0, 30)}`, `masked=${JSON.stringify(masked)} got=${still ?? 'ALLOW'}`)
+	}
+}
+
+// ── ⑨ 外置 allow 载入端到端（临时规则文件，跑完切回真实规则） ──────────────
+const demoDir = mkdtempSync(join(tmpdir(), 'trash-guard-allow-'))
+const demoRules = JSON.parse(readFileSync(DEFAULT_RULES_PATH, 'utf8'))
+demoRules.allow = [
+	{
+		id: 'demo-selectstring',
+		label: 'demo',
+		pattern: "(?:select-string|sls)[^;\\n]*?-pattern\\s*:?\\s*'[^'\\n]*'",
+		flags: 'gi',
+	},
+]
+writeFileSync(join(demoDir, 'rules.json'), JSON.stringify(demoRules))
+setRulesFile(join(demoDir, 'rules.json'))
+record(activeRules().allow.length === 1, 'allow-load: 外置条目载入', `n=${activeRules().allow.length}`)
+record(classifyText("Select-String -Path x -Pattern 'Remove-Item'") === undefined, 'allow-load: 掩码后放行', 'still deny')
+record(classifyText("Select-String -Path x -Pattern 'Remove-Item'; Remove-Item y")?.id === 'remove-item', 'allow-load: 同行真删除仍拦', 'got allow')
+setRulesFile(DEFAULT_RULES_PATH)
+
+const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1 + 2 + allowChecks + 3
 console.log(`\n闸门：${total} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))
