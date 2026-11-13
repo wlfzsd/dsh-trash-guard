@@ -93,7 +93,7 @@ const RULES = [
 	{
 		id: 'remove-item',
 		label: 'Remove-Item / rm / del / rd / rmdir / unlink',
-		re: new RegExp(STATEMENT + String.raw`(?:remove-item|clear-item|ri|rm|del|erase|rd|rmdir|unlink)(?=\s|/|$|["'])`, 'i'),
+		re: new RegExp(STATEMENT + String.raw`(?:remove-item|clear-item|ri|rm|del|erase|rd|rmdir|unlink)(?=\s|/|$|["'])(?!\s*=)`, 'i'),
 	},
 	{
 		id: 'clear-content',

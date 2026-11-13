@@ -178,6 +178,12 @@ for (const rule of realAllow) {
 	}
 }
 
+// ── ⑧b 内置兜底与外置规则的边界修复同步（2026-11-14） ─────────────────────
+setRulesFile('')
+record(classifyText('rd = csv.reader(fh)') === undefined, 'builtin: rd 变量赋值', `got=${classifyText('rd = csv.reader(fh)')?.id ?? 'allow'}`)
+record(classifyText('rd /s /q out')?.id === 'remove-item', 'builtin: rd /s 仍拦', `got=${classifyText('rd /s /q out')?.id ?? 'allow'}`)
+setRulesFile(DEFAULT_RULES_PATH)
+
 // ── ⑨ 外置 allow 载入端到端（临时规则文件，跑完切回真实规则） ──────────────
 const demoDir = mkdtempSync(join(tmpdir(), 'trash-guard-allow-'))
 const demoRules = JSON.parse(readFileSync(DEFAULT_RULES_PATH, 'utf8'))
@@ -199,7 +205,7 @@ record(classifyScript(applyAllow('rd = 1\r\nshutil.rmtree("/tmp/x")\r\n', demoRd
 record(classifyScript(applyAllow('rd = 1\r\nif exist x del x\r\n', demoRd), 'x.bat')?.id === 'bat-delete', 'allow-load: 批处理真删除仍拦', 'got allow')
 setRulesFile(DEFAULT_RULES_PATH)
 
-const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1 + 2 + allowChecks + 5
+const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1 + 2 + 2 + allowChecks + 5
 console.log(`\n闸门：${total} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))
