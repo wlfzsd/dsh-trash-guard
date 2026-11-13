@@ -19,7 +19,11 @@
  */
 const PLUGIN = new URL('../index.js', import.meta.url).href
 const plugin = await import(PLUGIN)
-const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate, launchedScriptRefs } = plugin.__internals
+const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate, launchedScriptRefs, setRulesFile, DEFAULT_RULES_PATH } = plugin.__internals
+
+// 2026-11-14：闸门此前没调 apply()，rulesFile 为空 → 测的是**内置兜底**，改 rules.json 测不到。
+// 夜间流程改的是外置规则，闸门必须先指向它，否则“ALL PASS”是假的。
+setRulesFile(DEFAULT_RULES_PATH)
 
 // ── ① 必须拒绝：命令字符串 ────────────────────────────────────────────────
 const MUST_DENY_TEXT = [
@@ -85,6 +89,10 @@ const MUST_ALLOW_TEXT = [
 	// 2026-11-13：`(RD.PSK_HEX)` / `(RD, ...)` 里的 RD 是标识符，不是 rd 命令
 	['$d = bytes.fromhex(RD.PSK_HEX)', '属性名 RD. 不是 rd 命令'],
 	['$x = getattr(RD, "PSK_HEX")', '参数里的 RD, 不是 rd 命令'],
+	// 2026-11-14：`rd = csv.reader(...)` 这类变量赋值不是 rmdir 命令
+	['rd = csv.reader(fh)', 'rd 变量赋值'],
+	['RD = _imp("x")', 'RD 变量赋值（大写）'],
+	['rm = 1', 'rm 变量赋值'],
 ]
 
 // ── ④ 必须放行：写文档的正文 ──────────────────────────────────────────────
