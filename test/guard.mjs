@@ -19,7 +19,7 @@
  */
 const PLUGIN = new URL('../index.js', import.meta.url).href
 const plugin = await import(PLUGIN)
-const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate } = plugin.__internals
+const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate, launchedScriptRefs } = plugin.__internals
 
 // ── ① 必须拒绝：命令字符串 ────────────────────────────────────────────────
 const MUST_DENY_TEXT = [
@@ -57,6 +57,22 @@ const MUST_DENY_SCRIPT = [
 const MUST_ALLOW_SCRIPT = [
 	['del self._hb_lines[:-40]\n', 'app.py', 'Python del 删的是名字/切片，不是文件'],
 	['// 注释里的 {rm}/{del} 不该命中\n', 'probe.mjs', '注释里的花括号短词'],
+]
+
+// ── ②c 启动识别（2026-11-13 补：解释器直启 / cmd 套解释器 / Start-Process） ──
+const MUST_LAUNCH = [
+	['python "x.py"', 'python 直启'],
+	['py -3 x.py', 'py 启动器'],
+	['python -u -X utf8 x.py', 'python 多开关'],
+	['pwsh x.ps1', 'pwsh 位置参数'],
+	['Start-Process "x.ps1"', 'Start-Process'],
+	['cmd /c python x.py', 'cmd /c 套解释器'],
+]
+
+// ── ②d 不得误认启动（只认语句起点，不认参数/内联代码） ────────────────────
+const MUST_NOT_LAUNCH = [
+	['echo python x.py', '非语句起点'],
+	['python -c "print(1)"', '内联代码'],
 ]
 
 // ── ③ 必须放行：命令字符串（这三类都是真实误伤过的） ──────────────────────
@@ -109,6 +125,14 @@ for (const [src, file, label] of MUST_ALLOW_SCRIPT) {
 	const got = classifyScript(src, file)?.id
 	record(got === undefined, `allow-script: ${label}`, `got=${got ?? 'allow'}`)
 }
+for (const [cmd, label] of MUST_LAUNCH) {
+	const refs = launchedScriptRefs(cmd)
+	record(refs.some((r) => /\.(?:py|ps1)$/i.test(r)), `launch: ${label}`, `refs=${JSON.stringify(refs)}`)
+}
+for (const [cmd, label] of MUST_NOT_LAUNCH) {
+	const refs = launchedScriptRefs(cmd)
+	record(refs.length === 0, `no-launch: ${label}`, `refs=${JSON.stringify(refs)}`)
+}
 for (const [cmd, label] of MUST_ALLOW_DOC) {
 	record(docPayloadOnly(cmd) === true, `allow-doc: ${label}`, `docPayloadOnly=${docPayloadOnly(cmd)}`)
 }
@@ -118,7 +142,7 @@ for (const [cmd, label] of MUST_NOT_EXEMPT) {
 // 模板占位归一化本身
 record(classifyText(normalizeTemplate('const t = `${REMOVE}` x')) === undefined, 'allow: 模板占位', 'normalizeTemplate 后仍命中')
 
-const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1
+const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1
 console.log(`\n闸门：${total} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))

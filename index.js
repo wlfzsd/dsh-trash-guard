@@ -566,6 +566,16 @@ function launchedScriptRefs(command) {
 		}
 	}
 	const TOKEN = String.raw`(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"'|;&()<>,]+))`
+	/** 在一段"语句余下部分"里找第一个像脚本的 token（跳过 -u/-X/utf8 这类开关与参数值）。 */
+	const tailScan = (tail) => {
+		for (const match of String(tail).matchAll(new RegExp(TOKEN, 'g'))) {
+			const token = match[1] ?? match[2] ?? match[3]
+			if (token !== undefined && isScriptPath(token)) {
+				push(token)
+				return
+			}
+		}
+	}
 	// 1) 语句起始就是脚本本身：`.\x.ps1`、`& .\x.ps1`、`x.bat`
 	for (const match of text.matchAll(new RegExp(String.raw`(?:^|[\n;|&(])\s*&?\s*${TOKEN}`, 'g'))) push(match[1] ?? match[2] ?? match[3])
 	// 2) `-File` / `-f`：允许 `-File x.ps1`、`-File 'x.ps1'`、`@('-File','x.ps1')` 三种写法
@@ -574,6 +584,15 @@ function launchedScriptRefs(command) {
 	for (const match of text.matchAll(new RegExp(String.raw`cmd(?:\.exe)?\s+[^\n]*?\/(?:c|k)\s+${TOKEN}`, 'gi'))) push(match[1] ?? match[2] ?? match[3])
 	// 4) `call` / `start` 之后的 token
 	for (const match of text.matchAll(new RegExp(String.raw`\b(?:call|start)\s+${TOKEN}`, 'gi'))) push(match[1] ?? match[2] ?? match[3])
+	// 5) 2026-11-13 补：解释器直接带脚本（`python x.py`、`py -3 x.py`、`pwsh x.ps1`、`bash x.sh`）。
+	//    原来只认 `&`/`-File`/`cmd /c`/`call`，python 直启全部漏扫（probe-launch 实测）。
+	//    刻意不含 node：插件自身 test/*.mjs 就是 node 直启且正文含删除样本，纳入会把自家门禁拦住。
+	const INTERP = String.raw`(?:python(?:[0-9.]+)?|py|pwsh|powershell|bash|zsh|sh)(?:\.exe)?`
+	for (const match of text.matchAll(new RegExp(String.raw`(?:^|[\n;|&(])\s*(?:&\s*)?${INTERP}\b([^\n;|]*)`, 'gi'))) tailScan(match[1])
+	// 6) `cmd /c python x.py`：cmd 之后若接解释器，脚本在第二个 token
+	for (const match of text.matchAll(new RegExp(String.raw`cmd(?:\.exe)?\s+[^\n]*?\/(?:c|k)\s+${INTERP}\b([^\n]*)`, 'gi'))) tailScan(match[1])
+	// 7) `Start-Process x.ps1` / `Start-Process -FilePath x.ps1`
+	for (const match of text.matchAll(/(?:^|[\n;|&(])\s*start-process\s+([^\n;|]*)/gi)) tailScan(match[1])
 	return [...refs]
 }
 
