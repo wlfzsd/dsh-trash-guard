@@ -170,6 +170,12 @@ for (const rule of realAllow) {
 		const still = classifyText(masked)?.id
 		record(still !== undefined, `allow-safe: ${rule.id} × ${cmd.slice(0, 30)}`, `masked=${JSON.stringify(masked)} got=${still ?? 'ALLOW'}`)
 	}
+	for (const [src, file] of MUST_DENY_SCRIPT) {
+		allowChecks += 1
+		const masked = applyAllow(src, [rule])
+		const still = classifyScript(masked, file)?.id
+		record(still !== undefined, `allow-safe-script: ${rule.id} × ${file}`, `masked=${JSON.stringify(masked)} got=${still ?? 'ALLOW'}`)
+	}
 }
 
 // ── ⑨ 外置 allow 载入端到端（临时规则文件，跑完切回真实规则） ──────────────
@@ -188,9 +194,12 @@ setRulesFile(join(demoDir, 'rules.json'))
 record(activeRules().allow.length === 1, 'allow-load: 外置条目载入', `n=${activeRules().allow.length}`)
 record(classifyText("Select-String -Path x -Pattern 'Remove-Item'") === undefined, 'allow-load: 掩码后放行', 'still deny')
 record(classifyText("Select-String -Path x -Pattern 'Remove-Item'; Remove-Item y")?.id === 'remove-item', 'allow-load: 同行真删除仍拦', 'got allow')
+const demoRd = [{ id: 'demo-rd', re: /rd\s*=\s*/gi }]
+record(classifyScript(applyAllow('rd = 1\r\nshutil.rmtree("/tmp/x")\r\n', demoRd), 'x.py')?.id === 'runtime-api-delete', 'allow-load: 脚本里真删除仍拦', 'got allow')
+record(classifyScript(applyAllow('rd = 1\r\nif exist x del x\r\n', demoRd), 'x.bat')?.id === 'bat-delete', 'allow-load: 批处理真删除仍拦', 'got allow')
 setRulesFile(DEFAULT_RULES_PATH)
 
-const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1 + 2 + allowChecks + 3
+const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1 + 2 + allowChecks + 5
 console.log(`\n闸门：${total} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))
