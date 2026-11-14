@@ -49,6 +49,8 @@ const MUST_DENY_TEXT = [
 	// 2026-11-13：短别名后直接跟 `/` 开关（cmd 合法写法）仍要拦——收紧别名后仍须覆盖
 	['del/q a.txt', 'remove-item'],
 	['rd/s /q out', 'remove-item'],
+	// 2026-11-15：白名单只掩 Env:，同行的真文件删除仍要拦
+	['Remove-Item Env:\\X; Remove-Item .\\a.txt', 'remove-item'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────
@@ -97,6 +99,8 @@ const MUST_ALLOW_TEXT = [
 	['rd = csv.reader(fh)', 'rd 变量赋值'],
 	['RD = _imp("x")', 'RD 变量赋值（大写）'],
 	['rm = 1', 'rm 变量赋值'],
+	// 2026-11-15：清理进程环境变量不是删文件（白名单条目 env-var-cleanup）
+	['Remove-Item Env:SM_ACCT', '清理进程环境变量'],
 ]
 
 // ── ④ 必须放行：写文档的正文 ──────────────────────────────────────────────
