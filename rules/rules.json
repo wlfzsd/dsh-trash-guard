@@ -8,6 +8,18 @@
       "label": "Remove-Item Env:<name>（只删进程环境变量，不是文件）",
       "pattern": "Remove-Item\\s+Env:\\\\?[A-Za-z0-9_]+",
       "flags": "gi"
+    },
+    {
+      "id": "scan-arg-quoted",
+      "label": "只读扫描/匹配开关的引号参数（-Pattern/-Match 等，参数是数据不是命令）",
+      "pattern": "(?:-(?:pattern|match|notmatch|simplematch|filter|include|exclude)\\b|--(?:pattern|regexp|include|exclude))\\s+('[^']*'|\"[^\"]*\")",
+      "flags": "gi"
+    },
+    {
+      "id": "single-lock-cleanup",
+      "label": "os.remove(SINGLE_LOCK)：应用自身单实例锁清理（仅此字面量）",
+      "pattern": "os\\.remove\\(\\s*SINGLE_LOCK\\s*\\)",
+      "flags": "gi"
     }
   ],
   "command": [

@@ -309,6 +309,7 @@ e2e 的分节结果：
 
 ## 9. 变更记录（近期）
 
+- **规则补丁（2026-11-18）**：`allow` 增加 `scan-arg-quoted`（`-Pattern`/`-Match` 等只读开关的引号参数只当数据，引号内 `|del ` 不再当命令）与 `single-lock-cleanup`（`os.remove(SINGLE_LOCK)` 字面量＝应用自身单实例锁清理）；`test/guard.mjs` 补“同行真删除仍拦”“异名锁仍拦”“docstring 提及锁放行”三组用例。只改规则与测试，热加载生效，不需要重启。
 - **v0.3.4（2026-11-14）**：`rules/rules.json` 新增 `allow` 白名单（掩码式，热加载）；`node test/guard.mjs` 增加白名单安全校验（不得吞掉 MUST_DENY）与端到端载入用例。
 - **v0.3.3（2026-11-13）**：启动识别补齐——Python/PowerShell/bash 直启、`cmd /c` 套解释器、`Start-Process` 都会在启动前读脚本正文；`node` 直启沿用写入侧扫描。
 - **v0.3.2（2026-11-13）**：`remove-item` 动词边界收紧（`(RD.`、`(rd,`、注释里的 `{rm}`/`{del}` 不再误伤）；`.py` 正文里的语句级 `del` 正规化（Python 的 `del` 删不了文件）；`--nightly` 窗口改为"本地昨日 0 点"，修掉 00:00 跑时窗口为 0 的缺陷。

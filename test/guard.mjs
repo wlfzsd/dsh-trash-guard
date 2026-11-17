@@ -51,6 +51,9 @@ const MUST_DENY_TEXT = [
 	['rd/s /q out', 'remove-item'],
 	// 2026-11-15：白名单只掩 Env:，同行的真文件删除仍要拦
 	['Remove-Item Env:\\X; Remove-Item .\\a.txt', 'remove-item'],
+	// 2026-11-18：引号参数是数据，但同行真删除仍要拦；锁清理白名单只认字面量
+	['Select-String -Pattern "x"; Remove-Item .\\a.txt', 'remove-item'],
+	['os.remove(OTHER_LOCK)', 'runtime-api-delete'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────
@@ -67,6 +70,7 @@ const MUST_DENY_SCRIPT = [
 const MUST_ALLOW_SCRIPT = [
 	['del self._hb_lines[:-40]\n', 'app.py', 'Python del 删的是名字/切片，不是文件'],
 	['// 注释里的 {rm}/{del} 不该命中\n', 'probe.mjs', '注释里的花括号短词'],
+	['"""说明：app.py 里的 os.remove(SINGLE_LOCK) 是锁清理。"""\n', 'probe.py', 'docstring 提到锁清理（白名单 single-lock-cleanup）'],
 ]
 
 // ── ②c 启动识别（2026-11-13 补：解释器直启 / cmd 套解释器 / Start-Process） ──
@@ -101,6 +105,9 @@ const MUST_ALLOW_TEXT = [
 	['rm = 1', 'rm 变量赋值'],
 	// 2026-11-15：清理进程环境变量不是删文件（白名单条目 env-var-cleanup）
 	['Remove-Item Env:SM_ACCT', '清理进程环境变量'],
+	// 2026-11-18：扫描/匹配开关的引号参数（含 | 交替）不再误伤（白名单 scan-arg-quoted）
+	["Select-String -LiteralPath .\\a.py -Pattern 'os\\.remove|del '", '扫描删除字样（引号内 | 交替）'],
+	['$hit -match "del |rmdir"', '表达式里 match 删除字样'],
 ]
 
 // ── ④ 必须放行：写文档的正文 ──────────────────────────────────────────────
