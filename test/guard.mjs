@@ -58,6 +58,11 @@ const MUST_DENY_TEXT = [
 	['git commit -m "x"; Remove-Item .\\a.txt', 'remove-item'],
 	['python -c "import os; os.remove(\'x\')"', 'runtime-api-delete'],
 	["python x.py --json '{}' ; Remove-Item .\\a.txt", 'remove-item'],
+	// 2026-11-19 加固：双引号里的 $(...) 会执行——白名单不得掩掉含 $/反引号的双引号段
+	['git commit -m "$(Remove-Item .\\a.txt)"', 'remove-item'],
+	['Select-String -Pattern "$(Remove-Item .\\a.txt)" .', 'remove-item'],
+	['$x = "$(Remove-Item .\\a.txt)" -match \'a\'', 'remove-item'],
+	['python x.py --json "$(Remove-Item .\\a.txt)"', 'remove-item'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────

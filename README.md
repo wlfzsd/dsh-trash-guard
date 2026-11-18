@@ -309,7 +309,7 @@ e2e 的分节结果：
 
 ## 9. 变更记录（近期）
 
-- **规则补丁（2026-11-19）**：`allow` 增加 `git-commit-message`（`git commit -m` 的提交说明只当数据）、`json-flag-arg`（`--json` 的参数只当数据）与 `regex-test-literal`（PowerShell `-match`/`-notmatch`/`-like` 左侧的引号字面量只当数据；该条须排在 `scan-arg-quoted` 之前，否则右侧带引号操作数时左侧字面量会残留）；`test/guard.mjs` 补“提交说明/`--json`/比较左侧字面量放行”与“提交后同行真删除、`python -c` 内真删除、`--json` 后真删除仍拦”六组用例。只改规则与测试，热加载生效，不需要重启。
+- **规则补丁（2026-11-19）**：`allow` 增加 `git-commit-message`（`git commit -m` 的提交说明只当数据）、`json-flag-arg`（`--json` 的参数只当数据）与 `regex-test-literal`（PowerShell `-match`/`-notmatch`/`-like` 左侧的引号字面量只当数据；该条须排在 `scan-arg-quoted` 之前，否则右侧带引号操作数时左侧字面量会残留）；`test/guard.mjs` 补“提交说明/`--json`/比较左侧字面量放行”与“提交后同行真删除、`python -c` 内真删除、`--json` 后真删除仍拦”六组用例。**同日加固**：四条引号类白名单（含 11-18 的 `scan-arg-quoted`）的双引号分支一律排除 `$` 与反引号——首版把整段双引号掩掉，`git commit -m "$(Remove-Item x)"` 这类子表达式会被静默放行；加固后此类样本全部回落到 `remove-item`，并补 4 条 MUST_DENY。只改规则与测试，热加载生效，不需要重启。
 - **规则补丁（2026-11-18）**：`allow` 增加 `scan-arg-quoted`（`-Pattern`/`-Match` 等只读开关的引号参数只当数据，引号内 `|del ` 不再当命令）与 `single-lock-cleanup`（`os.remove(SINGLE_LOCK)` 字面量＝应用自身单实例锁清理）；`test/guard.mjs` 补“同行真删除仍拦”“异名锁仍拦”“docstring 提及锁放行”三组用例。只改规则与测试，热加载生效，不需要重启。
 - **v0.3.4（2026-11-14）**：`rules/rules.json` 新增 `allow` 白名单（掩码式，热加载）；`node test/guard.mjs` 增加白名单安全校验（不得吞掉 MUST_DENY）与端到端载入用例。
 - **v0.3.3（2026-11-13）**：启动识别补齐——Python/PowerShell/bash 直启、`cmd /c` 套解释器、`Start-Process` 都会在启动前读脚本正文；`node` 直启沿用写入侧扫描。
