@@ -10,6 +10,12 @@
       "flags": "gi"
     },
     {
+      "id": "regex-test-literal",
+      "label": "PowerShell 比较运算符左侧的引号字面量（-match/-notmatch/-like 只做匹配，不执行）",
+      "pattern": "('[^']*'|\"[^\"]*\")\\s+-(?:match|notmatch|like)\\b",
+      "flags": "gi"
+    },
+    {
       "id": "scan-arg-quoted",
       "label": "只读扫描/匹配开关的引号参数（-Pattern/-Match 等，参数是数据不是命令）",
       "pattern": "(?:-(?:pattern|match|notmatch|simplematch|filter|include|exclude)\\b|--(?:pattern|regexp|include|exclude))\\s+('[^']*'|\"[^\"]*\")",
@@ -19,6 +25,18 @@
       "id": "single-lock-cleanup",
       "label": "os.remove(SINGLE_LOCK)：应用自身单实例锁清理（仅此字面量）",
       "pattern": "os\\.remove\\(\\s*SINGLE_LOCK\\s*\\)",
+      "flags": "gi"
+    },
+    {
+      "id": "git-commit-message",
+      "label": "git commit -m 的提交说明（引号内是数据，不是命令）",
+      "pattern": "\\bgit\\s+commit\\b[^\\n;|&]*?\\s-m\\s+('[^']*'|\"[^\"]*\")",
+      "flags": "gi"
+    },
+    {
+      "id": "json-flag-arg",
+      "label": "--json 的参数（证据/配置数据，不是命令；执行器开关如 -c/-e 不在其中）",
+      "pattern": "--json\\s+('[^']*'|\"[^\"]*\")",
       "flags": "gi"
     }
   ],

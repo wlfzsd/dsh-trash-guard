@@ -54,6 +54,10 @@ const MUST_DENY_TEXT = [
 	// 2026-11-18：引号参数是数据，但同行真删除仍要拦；锁清理白名单只认字面量
 	['Select-String -Pattern "x"; Remove-Item .\\a.txt', 'remove-item'],
 	['os.remove(OTHER_LOCK)', 'runtime-api-delete'],
+	// 2026-11-19：白名单只掩数据段，命令里其余位置的真删除仍要拦
+	['git commit -m "x"; Remove-Item .\\a.txt', 'remove-item'],
+	['python -c "import os; os.remove(\'x\')"', 'runtime-api-delete'],
+	["python x.py --json '{}' ; Remove-Item .\\a.txt", 'remove-item'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────
@@ -108,6 +112,12 @@ const MUST_ALLOW_TEXT = [
 	// 2026-11-18：扫描/匹配开关的引号参数（含 | 交替）不再误伤（白名单 scan-arg-quoted）
 	["Select-String -LiteralPath .\\a.py -Pattern 'os\\.remove|del '", '扫描删除字样（引号内 | 交替）'],
 	['$hit -match "del |rmdir"', '表达式里 match 删除字样'],
+	// 2026-11-19：三类"引号内是数据"的误伤（git 提交说明 / --json 证据 / 比较运算符左侧字面量）
+	['git commit -m "feat: 修引号内 |del 误伤"', 'git 提交说明（allow git-commit-message）'],
+	[`python stage_gate.py --json '{"problem":"引号内 |del 扫描"}'`, '--json 证据数据（allow json-flag-arg）'],
+	[`"OS_REMOVE => " + ('os.remove("x")' -match $kw)`, '比较运算符左侧字面量（allow regex-test-literal）'],
+	// 2026-11-19：同一形态带右侧引号操作数（-match 'x'）时，allow 顺序仍须先掩左侧字面量
+	[`$r = ('os.remove("x")' -match 'os\\.remove')`, '比较左侧字面量 + 右侧引号操作数'],
 ]
 
 // ── ④ 必须放行：写文档的正文 ──────────────────────────────────────────────
