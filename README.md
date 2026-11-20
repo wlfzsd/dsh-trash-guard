@@ -309,6 +309,7 @@ e2e 的分节结果：
 
 ## 9. 变更记录（近期）
 
+- **规则补丁（2026-11-21 S4 后）**：三条带语句前缀的命令规则（`remove-item`、`clear-content`、`overwrite-move`）前缀类由 `[\n;|&({]` 扩为 `[\r\n;|&({]`——裸 CR（0x0D）在 PowerShell 里同样是语句分隔符，原先 `Write-Output A<CR>Clear-Content …` 会把第二行命令藏掉；`test/guard.mjs` 补“裸 CR 后接删除/清空仍拦”与“脚本正文裸 CR 第二行删除仍拦”用例。只改规则与测试，热加载生效，不需要重启。
 - **规则补丁（2026-11-21）**：`allow` 增加 `go-regex-receiver`——Go 源码正则片段里转义的接收者名（`\(rm \*Rule\)`）只当数据；该条要求反斜杠在括号前，真命令 `$(rm \*)` 不含反斜杠、仍落 `remove-item`。`test/guard.mjs` 补“Go 正则片段放行”与“`$(rm \*)` 仍拦”两条用例。只改规则与测试，热加载生效，不需要重启。
 - **规则补丁（2026-11-19）**：`allow` 增加 `git-commit-message`（`git commit -m` 的提交说明只当数据）、`json-flag-arg`（`--json` 的参数只当数据）与 `regex-test-literal`（PowerShell `-match`/`-notmatch`/`-like` 左侧的引号字面量只当数据；该条须排在 `scan-arg-quoted` 之前，否则右侧带引号操作数时左侧字面量会残留）；`test/guard.mjs` 补“提交说明/`--json`/比较左侧字面量放行”与“提交后同行真删除、`python -c` 内真删除、`--json` 后真删除仍拦”六组用例。**同日加固**：四条引号类白名单（含 11-18 的 `scan-arg-quoted`）的双引号分支一律排除 `$` 与反引号——首版把整段双引号掩掉，`git commit -m "$(Remove-Item x)"` 这类子表达式会被静默放行；加固后此类样本全部回落到 `remove-item`，并补 4 条 MUST_DENY。只改规则与测试，热加载生效，不需要重启。
 - **规则补丁（2026-11-18）**：`allow` 增加 `scan-arg-quoted`（`-Pattern`/`-Match` 等只读开关的引号参数只当数据，引号内 `|del ` 不再当命令）与 `single-lock-cleanup`（`os.remove(SINGLE_LOCK)` 字面量＝应用自身单实例锁清理）；`test/guard.mjs` 补“同行真删除仍拦”“异名锁仍拦”“docstring 提及锁放行”三组用例。只改规则与测试，热加载生效，不需要重启。

@@ -65,6 +65,9 @@ const MUST_DENY_TEXT = [
 	['python x.py --json "$(Remove-Item .\\a.txt)"', 'remove-item'],
 	// 2026-11-21：Go 正则片段里的接收者名是数据，但真命令 $(rm \*) 仍须拦
 	['$(rm \\*)', 'remove-item'],
+	// 2026-11-21 S4：裸 CR（0x0D）也是语句分隔符——前缀类补 \r 后仍须拦
+	['x\rrm .\\a.txt', 'remove-item'],
+	['x\rClear-Content .\\a.txt', 'clear-content'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────
@@ -75,6 +78,8 @@ const MUST_DENY_SCRIPT = [
 	['Remove-`\r\nItem .\\data -Force\r\n', 'fold.ps1', 'remove-item'],
 	['shutil.rmtree("/tmp/x")\n', 'clean.py', 'runtime-api-delete'],
 	['del .\\a.txt\r\n', 'x.ps1', 'remove-item'],
+	// 2026-11-21 S4：脚本正文用裸 CR 分隔语句，第二行删除仍须拦
+	['Write-Output A\rClear-Content .\\a.txt\r\n', 'cr.ps1', 'clear-content'],
 ]
 
 // ── ②b 必须放行：脚本正文（2026-11-13 实测误伤） ──────────────────────────
