@@ -63,6 +63,8 @@ const MUST_DENY_TEXT = [
 	['Select-String -Pattern "$(Remove-Item .\\a.txt)" .', 'remove-item'],
 	['$x = "$(Remove-Item .\\a.txt)" -match \'a\'', 'remove-item'],
 	['python x.py --json "$(Remove-Item .\\a.txt)"', 'remove-item'],
+	// 2026-11-21：Go 正则片段里的接收者名是数据，但真命令 $(rm \*) 仍须拦
+	['$(rm \\*)', 'remove-item'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────
@@ -123,6 +125,8 @@ const MUST_ALLOW_TEXT = [
 	[`"OS_REMOVE => " + ('os.remove("x")' -match $kw)`, '比较运算符左侧字面量（allow regex-test-literal）'],
 	// 2026-11-19：同一形态带右侧引号操作数（-match 'x'）时，allow 顺序仍须先掩左侧字面量
 	[`$r = ('os.remove("x")' -match 'os\\.remove')`, '比较左侧字面量 + 右侧引号操作数'],
+	// 2026-11-21：Go 源码正则片段 `func \(rm \*Rule\)` 不是删除命令（allow go-regex-receiver）
+	[`L 'c004443' 'internal/networkrules/rule/rule.go' 'func \\(rm \\*Rule\\) andModifiers|func \\(rm \\*Rule\\) orModifiers'`, 'Go 正则接收者片段（allow go-regex-receiver）'],
 ]
 
 // ── ④ 必须放行：写文档的正文 ──────────────────────────────────────────────
