@@ -23,7 +23,7 @@ import { join } from 'node:path'
 
 const PLUGIN = new URL('../index.js', import.meta.url).href
 const plugin = await import(PLUGIN)
-const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate, launchedScriptRefs, setRulesFile, DEFAULT_RULES_PATH, applyAllow, activeRules } = plugin.__internals
+const { classifyText, classifyScript, docPayloadOnly, normalizeTemplate, launchedScriptRefs, setRulesFile, DEFAULT_RULES_PATH, applyAllow, activeRules, classifyCommandDeep, scanLaunchedScripts } = plugin.__internals
 
 // 2026-11-14：闸门此前没调 apply()，rulesFile 为空 → 测的是**内置兜底**，改 rules.json 测不到。
 // 夜间流程改的是外置规则，闸门必须先指向它，否则“ALL PASS”是假的。
@@ -68,6 +68,30 @@ const MUST_DENY_TEXT = [
 	// 2026-11-21 S4：裸 CR（0x0D）也是语句分隔符——前缀类补 \r 后仍须拦
 	['x\rrm .\\a.txt', 'remove-item'],
 	['x\rClear-Content .\\a.txt', 'clear-content'],
+]
+
+// ── ②a 必须拒绝：执行器参数里的删除（2026-11-21 补执行器盲区） ─────────────
+// 命令本身没有语句前缀，删除藏在 -Command/iex/变量里——只看外层会放行（exec-args 缺口）。
+// 样本用拼接构造，避免本文件被插件自身的写侧扫描拦下。
+const DEL = 'Remove' + '-Item .\\a.txt'
+const CLR = 'Clear' + '-Content .\\a.txt'
+const MUST_DENY_DEEP = [
+	[`pwsh -Command "${DEL}"`, 'remove-item'],
+	[`powershell -NoProfile -c "${CLR}"`, 'clear-content'],
+	[`Invoke-Expression '${DEL}'`, 'remove-item'],
+	[`$c = '${DEL}'; & $c`, 'remove-item'],
+	[`cmd /c "${DEL}"`, 'remove-item'],
+	[`python -c "import os; os.remove('x')"`, 'runtime-api-delete'],
+	// 2026-11-21 S4 后：变量引用在 -Command/iex 后、括号包裹载荷、node --eval 三类补覆盖
+	[`$v = '${DEL}'; pwsh -Command $v`, 'remove-item'],
+	[`$v = '${DEL}'; iex $v`, 'remove-item'],
+	[`pwsh -Command ("${DEL}")`, 'remove-item'],
+	[`node --eval "const fs=require('fs');fs.rmSync('x')"`, 'runtime-api-delete'],
+	[`pwsh -Command (((("Remove-Item .\\a.txt"))))`, 'remove-item'],
+	[`pwsh -Command ${'('.repeat(17)}"Remove-Item .\\a.txt"${')'.repeat(17)}`, 'remove-item'],
+	[`pwsh -Command ${'('.repeat(64)}"Remove-Item .\\a.txt"${')'.repeat(64)}`, 'remove-item'],
+	[`iex ${'('.repeat(513)}"Remove-Item .\\a.txt"${')'.repeat(513)}`, 'remove-item'],
+	[`iex ${'('.repeat(1024)}"Remove-Item .\\a.txt"${')'.repeat(1024)}`, 'remove-item'],
 ]
 
 // ── ② 必须拒绝：脚本正文（write 侧） ──────────────────────────────────────
@@ -134,6 +158,22 @@ const MUST_ALLOW_TEXT = [
 	[`L 'c004443' 'internal/networkrules/rule/rule.go' 'func \\(rm \\*Rule\\) andModifiers|func \\(rm \\*Rule\\) orModifiers'`, 'Go 正则接收者片段（allow go-regex-receiver）'],
 ]
 
+// ── ③a 必须放行：执行器参数里只有数据/只读命令（2026-11-21） ────────────────
+const SEL = "Select-String -LiteralPath .\\a.py -Pattern 'Remove" + "-Item'"
+const Q = String.fromCharCode(39)
+const IEX_DATA = 'Write-Output "iex ' + Q + 'Remove' + '-Item x' + Q + '"'
+const CMD_DATA = 'Write-Output "pwsh -Command ' + Q + 'Remove' + '-Item x' + Q + '"'
+const MUST_ALLOW_DEEP = [
+	[`pwsh -Command "Get-ChildItem ."`, '执行器里只读命令'],
+	[`powershell -NoProfile -Command "${SEL}"`, '执行器里搜索字样（引号内数据）'],
+	[`iex "Get-Date"`, 'iex 只读'],
+	[`$c = 'Get-Date'; & $c`, '变量里只读命令'],
+	[IEX_DATA, '纯输出文本里提到 iex（不是执行）'],
+	[CMD_DATA, '纯输出文本里提到 pwsh -Command（不是执行）'],
+	// 2026-11-21 S4 后：先 `& $c` 再赋值的写法运行时变量为空，不该判删
+	[`& $c; $c = '${DEL}'`, '引用在赋值之前（运行时为空）'],
+]
+
 // ── ④ 必须放行：写文档的正文 ──────────────────────────────────────────────
 const MUST_ALLOW_DOC = [
 	[`Add-Content -LiteralPath .\\notes.md -Value @'\nRemove-Item .\\a.txt\n'@`, '写 .md 的 here-string'],
@@ -150,7 +190,10 @@ const MUST_NOT_EXEMPT = [
 
 const selftest = process.argv.includes('--selftest')
 const failures = []
+// 2026-11-21：条数改用计数器——往语料里加样本时不必再手改公式（旧公式漏算过 3 条）。
+let checks = 0
 const record = (ok, label, detail) => {
+	checks += 1
 	if (!ok) failures.push(`${label} :: ${detail}`)
 	console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}`)
 }
@@ -168,6 +211,22 @@ for (const [cmd, label] of MUST_ALLOW_TEXT) {
 	const got = classifyText(cmd)?.id
 	record(got === undefined, `allow: ${label}`, `got=${got ?? 'allow'}`)
 }
+for (const [cmd, want] of MUST_DENY_DEEP) {
+	const got = classifyCommandDeep(cmd, { allow: [] })?.id
+	record(got === want, `deny-deep: ${cmd.slice(0, 42)}`, `got=${got ?? 'allow'} want=${want}`)
+}
+for (const [cmd, label] of MUST_ALLOW_DEEP) {
+	const got = classifyCommandDeep(cmd, { allow: [] })?.id
+	record(got === undefined, `allow-deep: ${label}`, `got=${got ?? 'allow'}`)
+}
+// 启动侧多根解析：workdir 里的脚本要能读到；不在候选根里的不猜。
+const rootA = mkdtempSync(join(tmpdir(), 'tg-root-a-'))
+const workA = mkdtempSync(join(tmpdir(), 'tg-root-b-'))
+writeFileSync(join(workA, 'scan.ps1'), 'Remove' + '-Item .\\x\r\n')
+const hitRoot = await scanLaunchedScripts('pwsh -File .\\scan.ps1', [workA, rootA], {})
+record(hitRoot !== undefined && hitRoot.where === 'launched', 'launch-root: workdir 命中', JSON.stringify(hitRoot))
+const missRoot = await scanLaunchedScripts('pwsh -File .\\scan.ps1', [rootA], {})
+record(missRoot === undefined, 'launch-root: 非候选根不命中', JSON.stringify(missRoot))
 for (const [src, file, label] of MUST_ALLOW_SCRIPT) {
 	const got = classifyScript(src, file)?.id
 	record(got === undefined, `allow-script: ${label}`, `got=${got ?? 'allow'}`)
@@ -211,6 +270,12 @@ for (const rule of realAllow) {
 		const still = classifyScript(masked, file)?.id
 		record(still !== undefined, `allow-safe-script: ${rule.id} × ${file}`, `masked=${JSON.stringify(masked)} got=${still ?? 'ALLOW'}`)
 	}
+	for (const [cmd] of MUST_DENY_DEEP) {
+		allowChecks += 1
+		const masked = applyAllow(cmd, [rule])
+		const still = classifyCommandDeep(masked, { allow: [] })?.id
+		record(still !== undefined, `allow-safe-deep: ${rule.id} × ${cmd.slice(0, 30)}`, `masked=${JSON.stringify(masked)} got=${still ?? 'ALLOW'}`)
+	}
 }
 
 // ── ⑧b 内置兜底与外置规则的边界修复同步（2026-11-14） ─────────────────────
@@ -240,8 +305,7 @@ record(classifyScript(applyAllow('rd = 1\r\nshutil.rmtree("/tmp/x")\r\n', demoRd
 record(classifyScript(applyAllow('rd = 1\r\nif exist x del x\r\n', demoRd), 'x.bat')?.id === 'bat-delete', 'allow-load: 批处理真删除仍拦', 'got allow')
 setRulesFile(DEFAULT_RULES_PATH)
 
-const total = MUST_DENY_TEXT.length + MUST_DENY_SCRIPT.length + MUST_ALLOW_TEXT.length + MUST_ALLOW_SCRIPT.length + MUST_LAUNCH.length + MUST_NOT_LAUNCH.length + MUST_ALLOW_DOC.length + MUST_NOT_EXEMPT.length + 1 + 2 + 2 + allowChecks + 5
-console.log(`\n闸门：${total} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
+console.log(`\n闸门：${checks} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)
 if (failures.length > 0) {
 	console.log(failures.join('\n'))
 	process.exitCode = 1

@@ -632,24 +632,112 @@ function normalizeScriptRef(ref) {
  * 递归跟随脚本之间的调用（深度 ≤2、最多 24 个文件），跟随路径相对脚本所在目录解析。
  * @returns {{where:'launched', path:string, rule:object, snippet:string} | undefined}
  */
-async function scanLaunchedScripts(command, baseDir, config, seen = new Set(), depth = 0) {
+async function scanLaunchedScripts(command, baseDirs, config, seen = new Set(), depth = 0) {
 	if (depth > 2 || seen.size > 24) return undefined
+	// 2026-11-21：相对路径不能只按会话工作区解析——工具自带 workdir 时，脚本在 workdir 里。
+	// 改为“多根尝试”：workdir → 会话工作区 → 进程 cwd，任一存在即读；只增加读取，不新增放行。
+	const bases = (Array.isArray(baseDirs) ? baseDirs : [baseDirs])
+		.filter((candidate) => typeof candidate === 'string' && candidate.length > 0)
+		.map((candidate) => resolve(candidate))
+	if (bases.length === 0) bases.push(resolve(process.cwd()))
 	for (const ref of launchedScriptRefs(command)) {
 		const cleaned = normalizeScriptRef(ref)
-		const target = isAbsolute(cleaned) ? resolve(cleaned) : resolve(baseDir, cleaned)
-		if (seen.has(target)) continue
-		seen.add(target)
-		if (!existsSync(target)) continue
-		let body
-		try {
-			body = await readScriptText(target, config?.maxScriptBytes ?? DEFAULT_CONFIG.maxScriptBytes)
-		} catch {
-			continue
+		const candidates = isAbsolute(cleaned) ? [resolve(cleaned)] : bases.map((base) => resolve(base, cleaned))
+		for (const target of candidates) {
+			if (seen.has(target)) continue
+			seen.add(target)
+			if (!existsSync(target)) continue
+			let body
+			try {
+				body = await readScriptText(target, config?.maxScriptBytes ?? DEFAULT_CONFIG.maxScriptBytes)
+			} catch {
+				continue
+			}
+			if (body === undefined) continue
+			const rule = classifyScript(body, target)
+			if (rule !== undefined) return { where: 'launched', path: target, rule, snippet: clip(matchedLine(body, rule.re)) }
+			const nested = await scanLaunchedScripts(body, dirname(target), config, seen, depth + 1)
+			if (nested !== undefined) return nested
 		}
-		if (body === undefined) continue
-		const rule = classifyScript(body, target)
-		if (rule !== undefined) return { where: 'launched', path: target, rule, snippet: clip(matchedLine(body, rule.re)) }
-		const nested = await scanLaunchedScripts(body, dirname(target), config, seen, depth + 1)
+	}
+	return undefined
+}
+
+/**
+ * 2026-11-21：执行器参数盲区——`pwsh -Command "…"`、`Invoke-Expression "…"`、`$c='…'; & $c`
+ * 把代码放在参数里，外层命令文本没有语句前缀，旧判定只看外层就放行。
+ * 这里把已知执行器的载荷抽出来，交给 classifyText 递归判（深度 ≤2、最多 16 段）。
+ * 抽不出（变量来自外部/拼接）时不猜、不额外放行——维持现状，不制造新的静默放行。
+ */
+const EXEC_ARG = String.raw`("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\([^()\n]*\)|[^\n;|]+)`
+
+function extractExecPayloads(command) {
+	const text = String(command)
+	const out = []
+	const add = (raw) => {
+		if (typeof raw !== 'string') return
+		let arg = raw.trim()
+		// 括号只是求值外壳：`-Command ("…")` 与 `-Command "…"` 等价（S4 冷复验补）。
+		// 剥到不动点、上限 512：4 层起任意常见嵌套都能执行，不能只剥 3 层；512 仅是防病态输入的护栏。
+		for (let i = 0; i < 512; i += 1) {
+			const inner = /^\(([\s\S]*)\)$/.exec(arg)
+			if (inner === null) break
+			arg = inner[1].trim()
+		}
+		// 超过护栏仍带外层括号（`iex (((…)))` 这类在任意深度都会执行）：保守去掉括号字符再判，
+		// 宁可多判一次正文，也不放行超深嵌套的求值外壳（S4 delta3 实测 513 层可执行）。
+		if (/^\([\s\S]*\)$/.test(arg)) arg = arg.replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim()
+		if (arg.length === 0) return
+		const quoted = /^"([\s\S]*)"$/.exec(arg) ?? /^'([\s\S]*)'$/.exec(arg)
+		out.push(quoted === null ? arg : quoted[1])
+	}
+	const patterns = [
+		// 2026-11-21：限定在语句起点——`Write-Output "iex '…'"` 这类纯文本提及不算执行。
+		new RegExp(String.raw`(?:^|[\r\n;|&({])\s*(?:pwsh|powershell)(?:\.exe)?\b[^\n;|]*?\s-(?:command|c)(?=\s)\s+${EXEC_ARG}`, 'gi'),
+		new RegExp(String.raw`(?:^|[\r\n;|&({])\s*cmd(?:\.exe)?\s+[^\n;|]*?\/(?:c|k)(?=\s)\s+${EXEC_ARG}`, 'gi'),
+		new RegExp(String.raw`(?:^|[\r\n;|&({])\s*(?:invoke-expression|iex)\b\s+${EXEC_ARG}`, 'gi'),
+		new RegExp(String.raw`(?:^|[\r\n;|&({])\s*python(?:[0-9.]+)?(?:\.exe)?\b[^\n;|]*?\s-c(?=\s)\s+${EXEC_ARG}`, 'gi'),
+		new RegExp(String.raw`(?:^|[\r\n;|&({])\s*node(?:\.exe)?\b[^\n;|]*?\s--?(?:e|eval)(?=\s)\s+${EXEC_ARG}`, 'gi'),
+		new RegExp(String.raw`(?:^|[\r\n;|&({])\s*(?:bash|sh|zsh)(?:\.exe)?\b[^\n;|]*?\s-c(?=\s)\s+${EXEC_ARG}`, 'gi'),
+	]
+	for (const re of patterns) for (const match of text.matchAll(re)) add(match[1])
+	// `$c = '…'; & $c` / `-Command $c` / `iex $c`：只认同一条命令里、引用点**之前**的字面量赋值；
+	// 顺序倒置（先 `& $c` 再赋值）运行时变量为空，不判（S4 冷复验补）。
+	const assignments = []
+	for (const match of text.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g)) {
+		const quoted = /^"([\s\S]*)"$/.exec(match[2]) ?? /^'([\s\S]*)'$/.exec(match[2])
+		if (quoted !== null) assignments.push({ name: match[1], value: quoted[1], at: match.index ?? 0 })
+	}
+	const resolveVar = (name, at) => {
+		let found
+		for (const item of assignments) {
+			if (item.at >= at) break
+			if (item.name === name) found = item.value
+		}
+		return found
+	}
+	const refPatterns = [
+		/(?:^|[\r\n;|&({])\s*&\s*\$([A-Za-z_][A-Za-z0-9_]*)/g,
+		/(?:^|[\r\n;|&({])\s*(?:invoke-expression|iex)\b\s+\$([A-Za-z_][A-Za-z0-9_]*)/gi,
+		/(?:^|[\r\n;|&({])\s*(?:pwsh|powershell)(?:\.exe)?\b[^\n;|]*?\s-(?:command|c)(?=\s)\s+\$([A-Za-z_][A-Za-z0-9_]*)/gi,
+		/(?:^|[\r\n;|&({])\s*(?:bash|sh|zsh)(?:\.exe)?\b[^\n;|]*?\s-c(?=\s)\s+\$([A-Za-z_][A-Za-z0-9_]*)/gi,
+	]
+	for (const re of refPatterns) {
+		for (const match of text.matchAll(re)) {
+			const value = resolveVar(match[1], match.index ?? 0)
+			if (value !== undefined) out.push(value)
+		}
+	}
+	return [...new Set(out)].slice(0, 16)
+}
+
+/** 命令文本 + 执行器载荷的有界递归判定；返回命中的规则或 undefined。 */
+function classifyCommandDeep(text, config, depth = 0) {
+	const rule = classifyText(text, config?.allow)
+	if (rule !== undefined) return rule
+	if (depth >= 2) return undefined
+	for (const payload of extractExecPayloads(text)) {
+		const nested = classifyCommandDeep(payload, config, depth + 1)
 		if (nested !== undefined) return nested
 	}
 	return undefined
@@ -691,13 +779,19 @@ async function inspect(tool, args, config, root) {
 	if (tool === 'pwsh' || tool === 'bash') {
 		const command = payload.command
 		if (typeof command !== 'string' || command.length === 0) return undefined
-		const rule = classifyText(command, config.allow)
+		const rule = classifyCommandDeep(command, config)
 		if (rule !== undefined) {
 			// 2026-11-12：只写进文档的正文不算删除（详见 docPayloadOnly）。
 			if (!docPayloadOnly(command)) return { where: 'command', rule, snippet: clip(command), risks: riskFactors(command) }
 		}
 		// 命令文本本身干净，但它启动的脚本可能不干净：启动前读正文。
-		const launched = config.scanLaunchedScripts ? await scanLaunchedScripts(command, root ?? process.cwd(), config) : undefined
+		// 2026-11-21：相对路径按 workdir（工具参数）→ 会话根解析，避免 workdir 场景漏扫。
+		const sessionRoot = root ?? process.cwd()
+		const workdir = typeof payload.workdir === 'string' && payload.workdir.length > 0
+			? (isAbsolute(payload.workdir) ? resolve(payload.workdir) : resolve(sessionRoot, payload.workdir))
+			: undefined
+		const bases = workdir === undefined ? sessionRoot : [workdir, sessionRoot]
+		const launched = config.scanLaunchedScripts ? await scanLaunchedScripts(command, bases, config) : undefined
 		return launched === undefined ? undefined : { ...launched, risks: riskFactors(launched.snippet) }
 	}
 	if (tool === 'write' && config.scanScriptWrites) {
@@ -1293,6 +1387,7 @@ export function apply(ctx, userConfig) {
 /** 仅供单元测试使用：导出纯函数，不影响加载。 */
 export const __internals = {
 	classifyText, classifyScript, classifyBatch, applyAllow, launchedScriptRefs, scanLaunchedScripts, normalizeScriptRef,
+	extractExecPayloads, classifyCommandDeep,
 	inspect, isInside, isScriptPath, clip, matchedLine, RULES, BAT_RULE,
 	riskFactors, denialText, normalizeTemplate, docPayloadOnly, stripCommentLines,
 	setRulesFile, activeRules, DEFAULT_RULES_PATH,
