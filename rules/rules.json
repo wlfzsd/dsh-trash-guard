@@ -49,7 +49,7 @@
   "launchAllow": [
     {
       "path": "E:\\claude综合\\mmtls微信解密\\截流软件\\web_screen\\screen_server.py",
-      "sha256": "4c7b568f0f969d04b8ba29d5140b9ddec0b643d29f9125e956cc325896ddbb8d",
+      "sha256": "1f89abaf21499a24e0117f9d82184d2efdbc9a1615b681d34d2f1f4ff6d3683c",
       "reason": "WEB筛选本地服务启动入口；正文 os.remove(tmp) 只清导出临时文件（2026-11-25 用户授权自决）"
     },
     {
