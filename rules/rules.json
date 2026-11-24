@@ -46,6 +46,18 @@
       "flags": "gi"
     }
   ],
+  "launchAllow": [
+    {
+      "path": "E:\\claude综合\\mmtls微信解密\\截流软件\\web_screen\\screen_server.py",
+      "sha256": "4c7b568f0f969d04b8ba29d5140b9ddec0b643d29f9125e956cc325896ddbb8d",
+      "reason": "WEB筛选本地服务启动入口；正文 os.remove(tmp) 只清导出临时文件（2026-11-25 用户授权自决）"
+    },
+    {
+      "path": "E:\\claude综合\\mmtls微信解密\\截流软件\\ui\\tab_keyword.py",
+      "sha256": "87970b77eb10f70b5c89dcaf07663602716f9ec089ed673a90b5ae84d3ac2cbe",
+      "reason": "关键词采集 Tab 启动入口；正文 os.remove(p) 只清临时文件（2026-11-25 用户授权自决）"
+    }
+  ],
   "command": [
     {
       "id": "remove-item",

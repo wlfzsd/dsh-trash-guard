@@ -19,6 +19,7 @@
  * 因为 profile 目录里没有 node_modules，任何裸包导入都会解析失败。
  */
 
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { appendFile, link, mkdir, open, readdir, readFile, rename, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -177,6 +178,7 @@ let rulesState = {
 	source: 'builtin',
 	command: RULES,
 	allow: [],
+	launchAllow: [],
 	batch: null,
 	docTargets: null,
 	docExecutors: null,
@@ -199,6 +201,19 @@ function compileRule(entry, kind) {
 	}
 }
 
+/**
+ * 2026-11-25：启动白名单（rules.json 的 launchAllow）。
+ * scanLaunchedScripts 在“读正文之前”用它比对：路径完全相等 + sha256 前缀匹配 → 跳过该文件的正文扫描。
+ * 这是唯一的“放行启动”通道；文件一旦被改动（哈希失配）立即恢复扫描。条目非法直接丢弃（宁少放，不误放）。
+ */
+function compileLaunchAllow(entry) {
+	if (entry === null || typeof entry !== 'object') return undefined
+	const rawPath = typeof entry.path === 'string' ? entry.path.trim() : ''
+	const sha256 = typeof entry.sha256 === 'string' ? entry.sha256.trim().toLowerCase() : ''
+	if (rawPath === '' || !/^[0-9a-f]{16,64}$/.test(sha256)) return undefined
+	return { path: resolve(rawPath).toLowerCase(), sha256, reason: typeof entry.reason === 'string' ? entry.reason : '' }
+}
+
 /** 读外置规则文件；返回 undefined 表示"用内置"。 */
 function loadRules(path) {
 	let parsed
@@ -212,6 +227,8 @@ function loadRules(path) {
 	const batch = compileRule(parsed.batch, 'batch')
 	// 2026-11-14：白名单（allow）——编译失败的条目直接丢弃（宁少放，不误放）；空数组合法。
 	const allow = Array.isArray(parsed.allow) ? parsed.allow.map((entry) => compileRule(entry, 'allow')).filter((rule) => rule !== undefined) : []
+	// 2026-11-25：启动白名单（路径+sha256）——同样宁少放，不误放。
+	const launchAllow = Array.isArray(parsed.launchAllow) ? parsed.launchAllow.map((entry) => compileLaunchAllow(entry)).filter((entry) => entry !== undefined) : []
 	const docTargets = typeof parsed.docExempt?.targets === 'string' ? parsed.docExempt.targets : ''
 	const docExecutors = typeof parsed.docExempt?.executors === 'string' ? parsed.docExempt.executors : ''
 	if (command.length === 0 || command.some((rule) => rule === undefined)) {
@@ -231,7 +248,7 @@ function loadRules(path) {
 		rulesState.error = '规则文件里 docExempt 正则非法'
 		return undefined
 	}
-	return { command, batch, allow, docTargets: docTargetRe, docExecutors: docExecutorRe, error: '' }
+	return { command, batch, allow, launchAllow, docTargets: docTargetRe, docExecutors: docExecutorRe, error: '' }
 }
 
 /** 热加载入口：mtime 没变直接返回缓存（每次工具调用的开销=一次 stat）。 */
@@ -243,7 +260,7 @@ function activeRules() {
 		mtimeMs = statSync(path).mtimeMs
 	} catch {
 		if (rulesState.source !== 'builtin') {
-			rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, allow: [], batch: null, docTargets: null, docExecutors: null, error: '规则文件不存在，已回退内置规则' }
+			rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, allow: [], launchAllow: [], batch: null, docTargets: null, docExecutors: null, error: '规则文件不存在，已回退内置规则' }
 			warnOnce(`dsh-trash-guard: ${rulesState.error}`)
 		}
 		return rulesState
@@ -264,7 +281,7 @@ function activeRules() {
 /** apply() 时指定规则文件（空串=用默认路径）。 */
 function setRulesFile(path) {
 	rulesFile = path
-	rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, allow: [], batch: null, docTargets: null, docExecutors: null, error: '' }
+	rulesState = { mtimeMs: -1, source: 'builtin', command: RULES, allow: [], launchAllow: [], batch: null, docTargets: null, docExecutors: null, error: '' }
 }
 
 /** 这些工具可能在磁盘上造成增删，影子层只围着它们转。 */
@@ -626,6 +643,21 @@ function normalizeScriptRef(ref) {
 		.replace(/^\.[\\/]/, '')
 }
 
+/** 2026-11-25：启动白名单判定（路径完全相等 + sha256 前缀匹配）。读失败/无条目一律不豁免。 */
+async function launchAllowed(target) {
+	const rules = activeRules()
+	if (!Array.isArray(rules.launchAllow) || rules.launchAllow.length === 0) return false
+	const key = resolve(target).toLowerCase()
+	const entry = rules.launchAllow.find((item) => item.path === key)
+	if (entry === undefined) return false
+	try {
+		const buffer = await readFile(target)
+		return createHash('sha256').update(buffer).digest('hex').startsWith(entry.sha256)
+	} catch {
+		return false
+	}
+}
+
 /**
  * 启动前扫描被引用的脚本正文（`pwsh -File x.ps1`、`cmd /c build.bat`、`& .\x.ps1`）。
  * 这是"模型直接跑一个现成脚本"的唯一可见点——命令文本里只有文件名，正文在启动前读出来看。
@@ -647,6 +679,8 @@ async function scanLaunchedScripts(command, baseDirs, config, seen = new Set(), 
 			if (seen.has(target)) continue
 			seen.add(target)
 			if (!existsSync(target)) continue
+			// 2026-11-25：启动白名单——路径+sha256 双匹配才跳过正文扫描（含其内部嵌套引用）；文件一改即失配。
+			if (await launchAllowed(target)) continue
 			let body
 			try {
 				body = await readScriptText(target, config?.maxScriptBytes ?? DEFAULT_CONFIG.maxScriptBytes)

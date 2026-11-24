@@ -17,6 +17,7 @@
  * 跑法：node test/guard.mjs [--selftest]
  *   --selftest：故意把一条期望反转，确认闸门会 FAIL（防"永远 PASS 的假门禁"）。
  */
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -303,6 +304,28 @@ record(classifyText("Select-String -Path x -Pattern 'Remove-Item'; Remove-Item y
 const demoRd = [{ id: 'demo-rd', re: /rd\s*=\s*/gi }]
 record(classifyScript(applyAllow('rd = 1\r\nshutil.rmtree("/tmp/x")\r\n', demoRd), 'x.py')?.id === 'runtime-api-delete', 'allow-load: 脚本里真删除仍拦', 'got allow')
 record(classifyScript(applyAllow('rd = 1\r\nif exist x del x\r\n', demoRd), 'x.bat')?.id === 'bat-delete', 'allow-load: 批处理真删除仍拦', 'got allow')
+setRulesFile(DEFAULT_RULES_PATH)
+
+// ── ⑩ 启动白名单（2026-11-25）：路径+sha256 双匹配才跳过正文扫描 ──────────
+const launchDir = mkdtempSync(join(tmpdir(), 'tg-launch-'))
+const allowedPath = join(launchDir, 'allowed.py')
+const otherPath = join(launchDir, 'other.py')
+const body = 'TMP = "x"\nos.' + 'remove(TMP)\n'
+writeFileSync(allowedPath, body)
+writeFileSync(otherPath, body)
+const hashOf = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
+const launchRules = JSON.parse(readFileSync(DEFAULT_RULES_PATH, 'utf8'))
+launchRules.launchAllow = [{ path: allowedPath, sha256: hashOf(allowedPath), reason: 'test' }]
+const launchRulesPath = join(launchDir, 'rules.json')
+writeFileSync(launchRulesPath, JSON.stringify(launchRules))
+setRulesFile(launchRulesPath)
+const allowHit = await scanLaunchedScripts(`python "${allowedPath}"`, [launchDir], {})
+record(allowHit === undefined, 'launch-allow: 命中条目放行', JSON.stringify(allowHit))
+const otherHit = await scanLaunchedScripts(`python "${otherPath}"`, [launchDir], {})
+record(otherHit !== undefined, 'launch-allow: 同内容异路径仍拦', JSON.stringify(otherHit))
+writeFileSync(allowedPath, body + '# changed\n')
+const staleHit = await scanLaunchedScripts(`python "${allowedPath}"`, [launchDir], {})
+record(staleHit !== undefined, 'launch-allow: 文件改动后哈希失配仍拦', JSON.stringify(staleHit))
 setRulesFile(DEFAULT_RULES_PATH)
 
 console.log(`\n闸门：${checks} 条语料，${failures.length === 0 ? 'ALL PASS' : `${failures.length} FAILED`}`)

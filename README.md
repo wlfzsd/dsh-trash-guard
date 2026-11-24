@@ -142,7 +142,7 @@ restore({ ids: ["?"] })                       # 只列出最近 20 条可恢复 
 **分析器**（零依赖，可手动跑）：
 
 ```powershell
-node %DSH_HOME%\plugins\dsh-trash-guard\tools\analyze-blocks.mjs
+node D:\Users\Administrator\.dsh\plugins\dsh-trash-guard\tools\analyze-blocks.mjs
 # 选项：--dir <目录> --since <ISO> --nightly --all --trash <workspace>\_trash\manifest.jsonl --out <报告路径> --json
 #   --nightly = 窗口取本地日 0 点起（夜间复盘用；否则增量游标会把窗口切成几分钟）
 # 退出码：0 正常（含"无新记录"）；2 目录不存在；1 参数/读取错误
@@ -158,7 +158,7 @@ node %DSH_HOME%\plugins\dsh-trash-guard\tools\analyze-blocks.mjs
 
 ## 4. 安装
 
-**本机当前状态（2026-11-10 实测）**：代码本体在 `%DSH_HOME%\plugins\dsh-trash-guard\`，profile 里只有一行引用——`profiles\web\cordis.patch.yml` 第 39-44 行。
+**本机当前状态（2026-11-10 实测）**：代码本体在 `D:\Users\Administrator\.dsh\plugins\dsh-trash-guard\`，profile 里只有一行引用——`profiles\web\cordis.patch.yml` 第 39-44 行。
 
 ```yaml
 - insert:
@@ -204,7 +204,7 @@ node %DSH_HOME%\plugins\dsh-trash-guard\tools\analyze-blocks.mjs
 5. `trash` → `restore` 往返实测：样本 113 B / SHA256 `104AC565…` 移入 `_trash/<stamp>/1-样本.txt`、manifest 记 `op=trash`，restore 后回到原位且哈希逐字节一致、manifest 追加 `op=restore`；
 6. 插件自带三套断言全过：`smoke` 54 项、`e2e` 145 项、`extreme` 41 项 → 240 项 `ALL PASS`（exit 0）。
 
-改动前的备份：patch 在 `%DSH_HOME%\backup\dsh-patch-backup\cordis.patch.yml_<时间戳>.bak`，插件文件在 `%DSH_HOME%\backup\dsh-plugin-backup\<时间戳>\`。
+改动前的备份：patch 在 `D:\Users\Administrator\.dsh\backup\dsh-patch-backup\cordis.patch.yml_<时间戳>.bak`，插件文件在 `D:\Users\Administrator\.dsh\backup\dsh-plugin-backup\<时间戳>\`。
 
 **卸载**：删掉那段 `- insert:` 块，重启 dsh 即可；`_trash/` 留着不影响任何东西。
 
@@ -269,19 +269,18 @@ e2e 的分节结果：
 
 ## 7.5 外置规则与热加载（v0.3.0）
 
-规则不再写死在源码里：`rules/rules.json` 存黑名单（`command` / `batch`）、白名单（`allow`）与文档豁免（`docExempt`）。插件**每次判定前 stat 一次 mtime**，变了就重读——这是"读数据文件"不是"加载模块"，所以**改规则即时生效，不用重启 dsh**；只有新机制/新钩子/新工具才需要改源码并重启。
+规则不再写死在源码里：`rules/rules.json` 存全部命中规则（`command` / `batch` / `docExempt`）。插件**每次判定前 stat 一次 mtime**，变了就重读——这是"读数据文件"不是"加载模块"，所以**改规则即时生效，不用重启 dsh**；只有新机制/新钩子/新工具才需要改源码并重启。
 
 ```json
 {
   "version": 1,
   "command": [{ "id": "remove-item", "label": "…", "pattern": "…", "flags": "i" }],
-  "allow": [],
+  "allow": [{ "id": "scan-arg-quoted", "label": "…", "pattern": "…", "flags": "gi" }],
+  "launchAllow": [{ "path": "C:\\app\\service.py", "sha256": "<64 hex>", "reason": "为什么放行" }],
   "batch": { "id": "bat-delete", "label": "…", "pattern": "…", "flags": "i" },
   "docExempt": { "targets": "…", "executors": "…" }
 }
 ```
-
-**黑名单 vs 白名单**：`command` 是黑名单（命中即拦）；`allow` 是白名单（判定前把**匹配段**掩成 `X`）。白名单只掩匹配到的片段、不丢整行——同一行后面若还有真删除，掩码后仍会被黑名单拦到。条目要写窄（例：`rd\s*=\s*`），默认 `flags: "gim"`；不要写整行/通配，也不要把可能被同名函数遮蔽的 cmdlet 参数写进去。`node test/guard.mjs` 会拿 MUST_DENY 样本逐条验证白名单没吞掉正确拦截。
 
 失效保护（宁可照旧拦，不可放空）：
 
@@ -291,7 +290,23 @@ e2e 的分节结果：
 | JSON/正则非法 | 继续用**上一版可用**规则（`external-stale`）+ warn |
 | 正常 | 源标记 `external`，启动日志打印来源与路径 |
 
-配置项 `rulesFile`（默认空=插件自带 `rules/rules.json`）。改完跑 `node test/guard.mjs` 确认"没放开正确拦截、没新增误伤"。
+配置项 `rulesFile`（默认空=插件自带 `rules/rules.json`）。改完跑 `node test/guard.mjs`（473 条语料）确认"没放开正确拦截、没新增误伤"。
+
+### `launchAllow`：启动白名单（2026-11-25，v0.3.6）
+
+启动前读正文（`scanLaunchedScripts`）对所有被启动的脚本一视同仁——服务类脚本只要正文里有一句 `os.remove(临时文件)`，每次启动都会被拦。`launchAllow` 是唯一的"放行启动"通道，判定条件是**路径完全相等 + 文件 sha256 前缀匹配**（16–64 位十六进制）：
+
+- 命中 → 跳过该文件的正文扫描（含其内部嵌套引用）；
+- 文件被改动一个字节 → 哈希失配 → 恢复扫描并重新拦截（不会"钉住一次永久放行"）；
+- 条目非法（缺 path、哈希格式不对）→ 直接丢弃；`rules.json` 整体写坏 → 回退内置规则（`launchAllow` 为空，继续拦）。
+
+改完被放行的文件后，重新钉哈希（把新哈希写回条目）：
+
+```powershell
+(Get-FileHash -LiteralPath 'C:\app\service.py' -Algorithm SHA256).Hash.ToLower()
+```
+
+也可以直接在 `rules.json` 里加条目，存盘即生效（规则文件热加载）。这是**安全边界上的放宽**，每条都必须写 `reason`，并只列真正需要启动的服务入口。
 
 **分析侧本来就是外置的**：`tools/analyze-blocks.mjs`、`tools/analyze-sessions.mjs` 是独立脚本，由定时任务按需启动，不在插件常驻路径上——插件只在拦截时写一行日志。
 
@@ -302,20 +317,7 @@ e2e 的分节结果：
 3. **`.shadow/` 会让 `grep -r` 之类的全盘遍历看到重复路径**；`trashDir` 名建议保留前导下划线/点，并加入项目忽略规则。
 4. **大工作区的影子层成本**：已用**父目录 mtime 增量**优化（目录 mtime 没变就不 stat 其子项），本机 300 文件实测：首次建影 0.58s、**稳态重扫 14ms**（优化前 0.49s）。默认 `maxFiles: 5000`，超限当轮只处理前 5000 个变更文件并告警（多轮自然收敛）。
 5. **启动扫描的三条硬边界**：路径要能静态解析出来（`& $cmd`、`& "$dir\x.ps1"` 这类变量算路径的解析不出）；单文件超过 `maxScriptBytes`（默认 8MB）时只扫前 8MB；脚本间递归深度 ≤2（4 层链会漏）、总数 ≤24。
-6. **启动扫描的已知误伤面**：`@"..."@` here-string 里成段出现的 `Remove-Item` 文字会被当成删除动作拒绝——它的设计取向是"宁可多拦一次，让人来解释"。
+6. **启动扫描的已知误伤面**：`@"..."@` here-string 里成段出现的 `Remove-Item` 文字会被当成删除动作拒绝——它的设计取向是"宁可多拦一次，让人来解释"。服务入口类脚本可用 `launchAllow`（路径+sha256）精确放行，见 §7.5。
 7. **编码已处理**：按 BOM 解码（UTF-16LE/BE、UTF-8 BOM），无 BOM 时按 NUL 占比猜 UTF-16——PowerShell 5.1 的 `>` / `Out-File` 默认写 UTF-16LE，不处理就会整篇扫不到。
 7. **不接管宿主自带的 `fs` 工具删除路径**（`fs/delete-intent` 钩子没接）：本 profile 没有独立 delete 工具，`apply_patch` 默认关闭；若将来开了，另加一个钩子即可。
 8. 本插件**不做** Windows 回收站集成（它会被系统按配额自动清空，且需要 `IFileOperation`，与本机"零删除"约定冲突）。
-
-## 9. 变更记录（近期）
-
-- **v0.3.5（2026-11-21）**：执行器参数盲区补拦——`pwsh/powershell -Command|-c`、`Invoke-Expression`/`iex`、`cmd /c|/k`、`python -c`、`node -e`、`bash/sh/zsh -c` 的载荷抽出来做有界递归判定（深度 ≤2、最多 16 段）；同一命令内 `$var = '字面量'` 后接 `& $var` / `-Command $var` / `iex $var` 也会解析，且只有引用点之前的赋值才生效（`& $c; $c='…'` 不再误报）。载荷抽取限定在语句起点（行首/换行/`;`/`|`/`&`/`(`），`Write-Output "iex 'Remove-Item x'"` 这类纯文本提及不会被误判；抽不出载荷时不猜、不新增放行。S4 冷复验后的残余补丁：`-Command $var`、`iex $var`、括号载荷 `-Command ("…")`（剥壳到 512 层护栏；超深括号保守展开后再判）、`node --eval` 长写法均纳入判定。启动扫描的相对路径解析改为多根尝试（工具 workdir → 会话工作区 → 进程 cwd），修掉 workdir≠工作区时 `pwsh -File .\x.ps1` 漏扫。`test/guard.mjs` 增至 470 条（含执行器载荷拒绝/放行、纯文本提及、allow 不吞载荷、启动多根命中）。**改的是 index.js，需重启 dsh 生效。**
-- **规则补丁（2026-11-21 S4 后）**：三条带语句前缀的命令规则（`remove-item`、`clear-content`、`overwrite-move`）前缀类由 `[\n;|&({]` 扩为 `[\r\n;|&({]`——裸 CR（0x0D）在 PowerShell 里同样是语句分隔符，原先 `Write-Output A<CR>Clear-Content …` 会把第二行命令藏掉；`test/guard.mjs` 补“裸 CR 后接删除/清空仍拦”与“脚本正文裸 CR 第二行删除仍拦”用例。只改规则与测试，热加载生效，不需要重启。
-- **规则补丁（2026-11-21）**：`allow` 增加 `go-regex-receiver`——Go 源码正则片段里转义的接收者名（`\(rm \*Rule\)`）只当数据；该条要求反斜杠在括号前，真命令 `$(rm \*)` 不含反斜杠、仍落 `remove-item`。`test/guard.mjs` 补“Go 正则片段放行”与“`$(rm \*)` 仍拦”两条用例。只改规则与测试，热加载生效，不需要重启。
-- **规则补丁（2026-11-19）**：`allow` 增加 `git-commit-message`（`git commit -m` 的提交说明只当数据）、`json-flag-arg`（`--json` 的参数只当数据）与 `regex-test-literal`（PowerShell `-match`/`-notmatch`/`-like` 左侧的引号字面量只当数据；该条须排在 `scan-arg-quoted` 之前，否则右侧带引号操作数时左侧字面量会残留）；`test/guard.mjs` 补“提交说明/`--json`/比较左侧字面量放行”与“提交后同行真删除、`python -c` 内真删除、`--json` 后真删除仍拦”六组用例。**同日加固**：四条引号类白名单（含 11-18 的 `scan-arg-quoted`）的双引号分支一律排除 `$` 与反引号——首版把整段双引号掩掉，`git commit -m "$(Remove-Item x)"` 这类子表达式会被静默放行；加固后此类样本全部回落到 `remove-item`，并补 4 条 MUST_DENY。只改规则与测试，热加载生效，不需要重启。
-- **规则补丁（2026-11-18）**：`allow` 增加 `scan-arg-quoted`（`-Pattern`/`-Match` 等只读开关的引号参数只当数据，引号内 `|del ` 不再当命令）与 `single-lock-cleanup`（`os.remove(SINGLE_LOCK)` 字面量＝应用自身单实例锁清理）；`test/guard.mjs` 补“同行真删除仍拦”“异名锁仍拦”“docstring 提及锁放行”三组用例。只改规则与测试，热加载生效，不需要重启。
-- **v0.3.4（2026-11-14）**：`rules/rules.json` 新增 `allow` 白名单（掩码式，热加载）；`node test/guard.mjs` 增加白名单安全校验（不得吞掉 MUST_DENY）与端到端载入用例。
-- **v0.3.3（2026-11-13）**：启动识别补齐——Python/PowerShell/bash 直启、`cmd /c` 套解释器、`Start-Process` 都会在启动前读脚本正文；`node` 直启沿用写入侧扫描。
-- **v0.3.2（2026-11-13）**：`remove-item` 动词边界收紧（`(RD.`、`(rd,`、注释里的 `{rm}`/`{del}` 不再误伤）；`.py` 正文里的语句级 `del` 正规化（Python 的 `del` 删不了文件）；`--nightly` 窗口改为"本地昨日 0 点"，修掉 00:00 跑时窗口为 0 的缺陷。
-- **v0.3.1（2026-11-12）**：注释行剥离实验回退（被 `extreme` 回归否掉），保持 fail-closed。
-- **v0.3.0（2026-11-12）**：规则外置到 `rules/rules.json`，按 mtime 热加载，改规则不用重启。
