@@ -49,13 +49,18 @@
   "launchAllow": [
     {
       "path": "E:\\claude综合\\mmtls微信解密\\截流软件\\web_screen\\screen_server.py",
-      "sha256": "1f89abaf21499a24e0117f9d82184d2efdbc9a1615b681d34d2f1f4ff6d3683c",
+      "sha256": "f287ad748f37dd047312a559d491680c15bd6911218e459f8d3a2ad0b1ffc9e9",
       "reason": "WEB筛选本地服务启动入口；正文 os.remove(tmp) 只清导出临时文件（2026-11-25 用户授权自决）"
     },
     {
       "path": "E:\\claude综合\\mmtls微信解密\\截流软件\\ui\\tab_keyword.py",
       "sha256": "87970b77eb10f70b5c89dcaf07663602716f9ec089ed673a90b5ae84d3ac2cbe",
       "reason": "关键词采集 Tab 启动入口；正文 os.remove(p) 只清临时文件（2026-11-25 用户授权自决）"
+    },
+    {
+      "path": "E:\\claude综合\\mmtls微信解密\\截流软件\\tools\\shop_scan_net.py",
+      "sha256": "3c4b019302ba40c36aa3587e59c9fc94d1b75f5601d004d9265366d61734ff08",
+      "reason": "店铺网络线扫描 CLI 启动入口；正文 shutil.rmtree(_LOCAL_TMP) 与 os.remove(CACHE) 只清临时/缓存（2026-11-27 夜间复盘裁决）"
     }
   ],
   "command": [
